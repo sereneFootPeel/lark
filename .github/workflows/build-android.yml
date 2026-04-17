@@ -19,18 +19,28 @@ jobs:
           components: 'native-image'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure GraalVM Path
+        # 这一步非常重要，确保环境变量被写入到 GitHub Action 的全局环境中
+        run: |
+          echo "GRAALVM_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          echo "GraalVM Home is set to: $JAVA_HOME"
+
       - name: Ensure mvnw is executable
         run: chmod +x mvnw
 
       - name: Build APK
+        # 建议同时使用环境变量和 Maven 参数，双重保险
         env:
           GRAALVM_HOME: ${{ env.JAVA_HOME }}
         run: |
-          echo "Current GRAALVM_HOME is: $GRAALVM_HOME"
-          ./mvnw gluonfx:build gluonfx:package -Pandroid -DgraalvmHome=$JAVA_HOME
+          ./mvnw gluonfx:build gluonfx:package \
+            -Pandroid \
+            -Dgluonfx.target=android \
+            -DgraalvmHome=${{ env.JAVA_HOME }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lark-apk
-          path: target/gluonfx/aarch64-android/gvm/lark.apk
+          # 注意：路径可能因 Gluon 版本不同而略有差异，如果上传失败，请检查 target 目录结构
+          path: target/gluonfx/aarch64-android/gvm/*.apk
