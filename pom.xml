@@ -11,7 +11,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.compiler.release>18</maven.compiler.release>
+        <maven.compiler.release>17</maven.compiler.release>
         <javafx.version>18.0.2</javafx.version>
         <junit.version>5.10.2</junit.version>
         <gluon.attach.version>4.0.19</gluon.attach.version>
