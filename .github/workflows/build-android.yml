@@ -24,8 +24,14 @@ jobs:
         run: |
           wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.3.2/graalvm-ce-java18-linux-amd64-22.3.2.tar.gz
           tar -xzf graalvm-ce-java18-linux-amd64-22.3.2.tar.gz
-          echo "GRAALVM_HOME=$PWD/graalvm-ce-java18-22.3.2" >> $GITHUB_ENV
-          echo "$PWD/graalvm-ce-java18-22.3.2/bin" >> $GITHUB_PATH
+          GVM_DIR="$PWD/graalvm-ce-java18-22.3.2"
+          echo "GRAALVM_HOME=$GVM_DIR" >> $GITHUB_ENV
+          echo "$GVM_DIR/bin" >> $GITHUB_PATH
+          # set JAVA_HOME to GraalVM for the rest of the job and install native-image
+          echo "JAVA_HOME=$GVM_DIR" >> $GITHUB_ENV
+          export PATH="$GVM_DIR/bin:$PATH"
+          gu --version || true
+          gu install native-image || true
 
       - name: Install Gluon Client plugin
         run: |
