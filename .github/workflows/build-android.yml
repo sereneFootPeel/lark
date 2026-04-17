@@ -38,7 +38,9 @@ jobs:
         run: chmod +x mvnw
 
       - name: Build APK
-        run: ./mvnw gluonfx:build gluonfx:package -Pandroid
+        run: |
+          export GRAALVM_HOME=$PWD/graalvm-ce-java18-22.3.2
+          ./mvnw gluonfx:build gluonfx:package -Pandroid
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
