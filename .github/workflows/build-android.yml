@@ -11,18 +11,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4.1.1
 
-      # 1. 换成普通的 JDK 17，不要用 setup-graalvm
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4.2.1
+      # 1. 核心修复：直接安装 GraalVM 环境，不再依赖插件的 install-graalvm 命令
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
         with:
           java-version: '17'
-          distribution: 'temurin'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # 必须安装 native-image 组件
+          components: 'native-image'
+
+      # 2. 安装 Android SDK 相关依赖 (Ubuntu 默认环境通常已有，但明确声明更稳)
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Ensure mvnw is executable
         run: chmod +x mvnw
 
-      # 2. 关键修改：让插件自己去下载 Gluon 专用的 GraalVM
+      # 3. 运行构建：删掉无效的 install-graalvm
+      # 增加 -Pandroid 激活 Android 配置
       - name: Build APK
         run: |
-          ./mvnw gluonfx:install-graalvm    # 强制下载 Gluon 专用版
           ./mvnw gluonfx:build gluonfx:package -Pandroid
+
+      # 4. 上传生成的 APK (路径通常在 target/gluonfx/aarch64-android/ 下)
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: target/gluonfx/aarch64-android/gvm/*.apk
