@@ -1,49 +1,32 @@
-                  - name: Show workspace and GraalVM dir
-                    run: |
-                      pwd
-                      ls -l
-                      ls -l $PWD/graalvm-ce-java18-22.3.2 || true
-      - name: Debug GraalVM env
-        run: |
-          echo "GRAALVM_HOME=$GRAALVM_HOME"
-          echo "JAVA_HOME=$JAVA_HOME"
-          ls -l $GRAALVM_HOME || true
-          ls -l $JAVA_HOME || true
-          ls -l ./graalvm-ce-java18-22.3.2 || true
-          env | grep GRAAL
-                    name: Build Android APK
+name: Build Android APK
 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '17'
+          distribution: 'graalvm-community'
+          components: 'native-image'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure mvnw is executable
+        run: chmod +x mvnw
+
+      - name: Build APK
+        run: ./mvnw gluonfx:build gluonfx:package -Pandroid -DgraalvmHome=$JAVA_HOME
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lark-apk
           path: target/gluonfx/aarch64-android/gvm/lark.apk
-                      push:
-                        branches: [ main ]
-                      workflow_dispatch:
-
-
-                      build:
-                        runs-on: ubuntu-latest
-                        steps:
-                          - uses: actions/checkout@v4
-
-                          - name: Setup GraalVM
-                            uses: graalvm/setup-graalvm@v1
-                            with:
-                              java-version: '17'
-                              distribution: 'graalvm-community'
-                              components: 'native-image'
-                              github-token: ${{ secrets.GITHUB_TOKEN }}
-
-                          - name: Set GRAALVM_HOME for GluonFX
-                            run: echo "GRAALVM_HOME=$JAVA_HOME" >> $GITHUB_ENV
-
-                          - name: Ensure mvnw is executable
-                            run: chmod +x mvnw
-
-                          - name: Build APK
-                            run: ./mvnw gluonfx:build gluonfx:package -Pandroid
-
-                          - name: Upload APK
-                            uses: actions/upload-artifact@v4
-                            with:
-                              name: lark-apk
-                              path: target/gluonfx/aarch64-android/gvm/lark.apk
-
