@@ -1,3 +1,12 @@
+      - name: Debug GraalVM env
+        run: |
+          echo "GRAALVM_HOME=$GRAALVM_HOME"
+          echo "JAVA_HOME=$JAVA_HOME"
+          ls -l $GRAALVM_HOME || true
+          ls -l $JAVA_HOME || true
+          ls -l ./graalvm-ce-java18-22.3.2 || true
+          env | grep GRAAL
+          env | grep JAVA
 name: Build Android APK
 
 on:
@@ -46,6 +55,7 @@ jobs:
       - name: Build APK
         run: |
           export GRAALVM_HOME=$PWD/graalvm-ce-java18-22.3.2
+          export JAVA_HOME=$PWD/graalvm-ce-java18-22.3.2
           ./mvnw gluonfx:build gluonfx:package -Pandroid
 
       - name: Upload APK
