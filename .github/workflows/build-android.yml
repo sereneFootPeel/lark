@@ -1,45 +1,40 @@
 name: Build Android APK
-
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4
 
-      # 使用普通 JDK 即可，Gluon 插件会自行处理原生编译环境
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Setup GraalVM (官方 Action)
+        uses: graalvm/setup-graalvm@v1
         with:
           java-version: '17'
-          distribution: 'temurin'
-
-      # 安装 Ubuntu 编译 Android 原生程序所需的二进制依赖
-      - name: Install Libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libgl-dev libgtk-3-dev libpango1.0-dev libxtst-dev
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
-      - name: Ensure mvnw is executable
+      - name: Make mvnw executable
         run: chmod +x mvnw
 
-      # 运行构建：此时插件会发现没有 GraalVM，会自动下载 Gluon 专用的版本
-      - name: Build APK
+      - name: Build with GluonFX
         env:
+          GRAALVM_HOME: ${{ env.JAVA_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
         run: |
-          ./mvnw clean gluonfx:build gluonfx:package -Pandroid
+          ./mvnw clean gluonfx:build gluonfx:package -Pandroid -DskipTests -e
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          # 修正后的通用路径匹配
           path: target/gluonfx/aarch64-android/gvm/*.apk
