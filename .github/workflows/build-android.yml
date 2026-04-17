@@ -23,7 +23,11 @@ jobs:
         run: chmod +x mvnw
 
       - name: Build APK
-        run: ./mvnw gluonfx:build gluonfx:package -Pandroid -DgraalvmHome=$JAVA_HOME
+        env:
+          GRAALVM_HOME: ${{ env.JAVA_HOME }}
+        run: |
+          echo "Current GRAALVM_HOME is: $GRAALVM_HOME"
+          ./mvnw gluonfx:build gluonfx:package -Pandroid -DgraalvmHome=$JAVA_HOME
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

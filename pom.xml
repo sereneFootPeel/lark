@@ -64,6 +64,7 @@
                 <configuration>
                     <mainClass>${main.class}</mainClass>
                     <appIdentifier>com.philosophy.lark</appIdentifier>
+                    <graalvmHome>${env.GRAALVM_HOME}</graalvmHome>
                     <target>${gluonfx.target}</target>
                     <attachList>
                         <list>accelerometer</list>
