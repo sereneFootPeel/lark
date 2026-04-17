@@ -1,3 +1,8 @@
+                  - name: Show workspace and GraalVM dir
+                    run: |
+                      pwd
+                      ls -l
+                      ls -l $PWD/graalvm-ce-java18-22.3.2 || true
       - name: Debug GraalVM env
         run: |
           echo "GRAALVM_HOME=$GRAALVM_HOME"
