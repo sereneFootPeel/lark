@@ -11,32 +11,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup GraalVM
-        uses: graalvm/setup-graalvm@v1
+      # 1. 换成普通的 JDK 17，不要用 setup-graalvm
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          java-version: '17' # 确保这里和 pom.xml 一致
-          distribution: 'graalvm-community'
-          components: 'native-image'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Environment
-        run: |
-          echo "GRAALVM_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          java-version: '17'
+          distribution: 'temurin'
 
       - name: Ensure mvnw is executable
         run: chmod +x mvnw
 
+      # 2. 关键修改：让插件自己去下载 Gluon 专用的 GraalVM
       - name: Build APK
         run: |
-          # 强制指定 compiler.release 为 17 解决版本不支持问题
-          ./mvnw gluonfx:build gluonfx:package \
-            -Pandroid \
-            -Dgluonfx.target=android \
-            -DgraalvmHome=${{ env.JAVA_HOME }} \
-            -Dmaven.compiler.release=17
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: lark-apk
-          path: target/gluonfx/aarch64-android/gvm/*.apk
+          ./mvnw gluonfx:install-graalvm    # 强制下载 Gluon 专用版
+          ./mvnw gluonfx:build gluonfx:package -Pandroid
