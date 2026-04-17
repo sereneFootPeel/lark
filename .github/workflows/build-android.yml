@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,9 +27,11 @@ jobs:
           wget https://download2.gluonhq.com/openjfx/21.0.2/openjfx-21.0.2_linux-x64_bin-sdk.zip
           unzip openjfx-21.0.2_linux-x64_bin-sdk.zip -d $HOME/javafx-sdk
 
+      - name: Ensure mvnw is executable
+        run: chmod +x mvnw
+
       - name: Build APK
-        run: |
-          ./mvnw gluonfx:build gluonfx:package -Pandroid
+        run: ./mvnw gluonfx:build gluonfx:package -Pandroid
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
