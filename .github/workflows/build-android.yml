@@ -11,35 +11,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4.1.1
 
-      # 1. 设置 GraalVM (注意：Gluon 有时更喜欢它自己的 GraalVM，但通常这个可以工作)
-      - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
+      # 使用普通 JDK 即可，Gluon 插件会自行处理原生编译环境
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          native-image-job-reports: 'true'
+          distribution: 'temurin'
 
-      # 2. 显式设置 Android SDK
+      # 安装 Ubuntu 编译 Android 原生程序所需的二进制依赖
+      - name: Install Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libgl-dev libgtk-3-dev libpango1.0-dev libxtst-dev
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 3. 必须：手动下载 Gluon 专用的 GraalVM (因为 compile 失败通常是由于标准版 GraalVM 不支持 Android 交叉编译)
-      # 插件 1.0.28 虽然删了 install-graalvm 目标，但它提供了一个自动下载机制
       - name: Ensure mvnw is executable
         run: chmod +x mvnw
 
-      # 4. 关键修改：增加环境变量并使用 gluonfx:compile
-      # 我们手动指定路径，确保插件能找到 Android SDK
-      - name: Build with GluonFX
+      # 运行构建：此时插件会发现没有 GraalVM，会自动下载 Gluon 专用的版本
+      - name: Build APK
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
         run: |
-          # 如果之前报错，尝试先 clean
-          ./mvnw clean gluonfx:build gluonfx:package -Pandroid -Dgluonfx.target=android
+          ./mvnw clean gluonfx:build gluonfx:package -Pandroid
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
+          # 修正后的通用路径匹配
           path: target/gluonfx/aarch64-android/gvm/*.apk
