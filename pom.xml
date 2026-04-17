@@ -65,7 +65,7 @@
                     <mainClass>${main.class}</mainClass>
                     <appIdentifier>com.philosophy.lark</appIdentifier>
                     <!-- use GRAALVM_HOME environment variable if set on CI runners -->
-                    <graalvmHome>${env.GRAALVM_HOME}</graalvmHome>
+                    <graalvmHome>${project.basedir}/graalvm-ce-java18-22.3.2</graalvmHome>
                     <target>${gluonfx.target}</target>
                     <attachList>
                         <list>accelerometer</list>
