@@ -2,7 +2,6 @@ package com.philosophy.lark;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
@@ -13,14 +12,11 @@ public final class HourglassSimulation {
     public static final double DIAMOND_RADIUS = 0.54;
     public static final double THROAT_HALF_WIDTH = 0.018;
 
-    private static final double FIXED_TICK = 1.0 / 150.0;
     private static final double LIGHT_SCALE = 0.86;
-    private static final double PARTICLE_RADIUS_SCALE = 0.32;
     private static final double SMOOTHING_RADIUS_SCALE = 1.48;
     private static final double BASE_GRAVITY = 1.46;
     private static final double AGITATION_GRAVITY = 0.0;
     private static final double INERTIA_ACCELERATION = 0.72;
-    private static final int RELAXATION_ITERATIONS = 4;
     private static final double SELF_DENSITY = 1.0;
     private static final double SELF_NEAR_DENSITY = 1.0;
     private static final double REST_DENSITY = 3.6;
@@ -34,10 +30,11 @@ public final class HourglassSimulation {
     private static final double BOUNDARY_TANGENT_DAMPING = 0.98;
     private static final double REST_SPEED = 0.075;
     private static final double MAX_SPEED = 2.10;
-    private static final double SEED_JITTER = 0.08;
     private static final double MIN_PRESSURE = 0.0;
 
     private final int particleCount;
+    private final double fixedTick;
+    private final int relaxationIterations;
     private final double lightSpacing;
     private final double lightSize;
     private final double particleRadius;
@@ -82,7 +79,13 @@ public final class HourglassSimulation {
     }
 
     public HourglassSimulation(int particleCount, long seed) {
+        this(particleCount, seed, LarkController.QualityProfile.DESKTOP.simulationTuning());
+    }
+
+    HourglassSimulation(int particleCount, long seed, LarkController.SimulationTuning tuning) {
         this.particleCount = Math.max(1, particleCount);
+        this.fixedTick = tuning.fixedTick();
+        this.relaxationIterations = tuning.relaxationIterations();
         this.lightSpacing = deriveSpacing(this.particleCount);
         this.particleRadius = lightSpacing * 0.14;
 
@@ -116,18 +119,40 @@ public final class HourglassSimulation {
     }
 
     public void step(double deltaSeconds, Vector2 gravity) {
-        step(deltaSeconds, gravity, 0.0, gravity);
+        step(deltaSeconds, gravity.x(), gravity.y(), 0.0, gravity.x(), gravity.y());
     }
 
     public void step(double deltaSeconds, Vector2 gravity, double agitation, Vector2 inertiaDirection) {
+        step(deltaSeconds, gravity.x(), gravity.y(), agitation, inertiaDirection.x(), inertiaDirection.y());
+    }
+
+    public void step(double deltaSeconds, double gravityX, double gravityY) {
+        step(deltaSeconds, gravityX, gravityY, 0.0, gravityX, gravityY);
+    }
+
+    public void step(double deltaSeconds, double gravityX, double gravityY, double agitation, double inertiaX, double inertiaY) {
         accumulator += Math.max(0.0, deltaSeconds);
-        double gravityMagnitude = clamp(gravity.magnitude(), 0.0, 1.0);
-        Vector2 normalizedGravity = gravity.normalized(0.0, 0.0);
-        Vector2 normalizedInertia = inertiaDirection.normalized(0.0, 0.0);
+        double gravityMagnitude = clamp(magnitude(gravityX, gravityY), 0.0, 1.0);
+        double normalizedGravityX = 0.0;
+        double normalizedGravityY = 0.0;
+        if (gravityMagnitude >= 1.0E-8) {
+            double inverseGravityMagnitude = 1.0 / gravityMagnitude;
+            normalizedGravityX = gravityX * inverseGravityMagnitude;
+            normalizedGravityY = gravityY * inverseGravityMagnitude;
+        }
+        double inertiaMagnitude = magnitude(inertiaX, inertiaY);
+        double normalizedInertiaX = 0.0;
+        double normalizedInertiaY = 0.0;
+        if (inertiaMagnitude >= 1.0E-8) {
+            double inverseInertiaMagnitude = 1.0 / inertiaMagnitude;
+            normalizedInertiaX = inertiaX * inverseInertiaMagnitude;
+            normalizedInertiaY = inertiaY * inverseInertiaMagnitude;
+        }
         double boundedAgitation = clamp(agitation, 0.0, 1.0);
-        while (accumulator >= FIXED_TICK) {
-            advanceFluidStep(normalizedGravity, gravityMagnitude, boundedAgitation, normalizedInertia);
-            accumulator -= FIXED_TICK;
+        while (accumulator >= fixedTick) {
+            advanceFluidStep(normalizedGravityX, normalizedGravityY, gravityMagnitude,
+                    boundedAgitation, normalizedInertiaX, normalizedInertiaY);
+            accumulator -= fixedTick;
         }
     }
 
@@ -198,7 +223,7 @@ public final class HourglassSimulation {
     double averageParticleSpeed() {
         double totalSpeed = 0.0;
         for (int i = 0; i < particleCount; i++) {
-            totalSpeed += Math.hypot(velocityX[i], velocityY[i]);
+            totalSpeed += magnitude(velocityX[i], velocityY[i]);
         }
         return totalSpeed / particleCount;
     }
@@ -207,13 +232,13 @@ public final class HourglassSimulation {
         double neighborRadiusSquared = neighborRadius * neighborRadius;
         int isolated = 0;
         for (int i = 0; i < particleCount; i++) {
-            double speed = Math.hypot(velocityX[i], velocityY[i]);
+            double speed = magnitude(velocityX[i], velocityY[i]);
             if (speed < speedThreshold) {
                 continue;
             }
             boolean hasFastNeighbor = false;
             for (int j = 0; j < particleCount; j++) {
-                if (i == j || Math.hypot(velocityX[j], velocityY[j]) < speedThreshold) {
+                if (i == j || magnitude(velocityX[j], velocityY[j]) < speedThreshold) {
                     continue;
                 }
                 double dx = positionX[j] - positionX[i];
@@ -312,29 +337,43 @@ public final class HourglassSimulation {
         }
     }
 
-    private void advanceFluidStep(Vector2 gravity, double gravityMagnitude, double agitation, Vector2 inertiaDirection) {
-        Vector2 effectiveGravity = gravityMagnitude < 1.0E-6
-                ? new Vector2(0.0, 0.0)
-                : blend(gravity, inertiaDirection, 0.08 + agitation * 0.12).normalized(gravity.x(), gravity.y());
+    private void advanceFluidStep(double gravityX, double gravityY, double gravityMagnitude,
+                                  double agitation, double inertiaX, double inertiaY) {
+        double effectiveGravityX = 0.0;
+        double effectiveGravityY = 0.0;
+        if (gravityMagnitude >= 1.0E-6) {
+            double inertiaWeight = clamp(0.08 + agitation * 0.12, 0.0, 0.32);
+            double gravityWeight = 1.0 - inertiaWeight;
+            double blendedX = gravityX * gravityWeight + inertiaX * inertiaWeight;
+            double blendedY = gravityY * gravityWeight + inertiaY * inertiaWeight;
+            double blendedMagnitude = magnitude(blendedX, blendedY);
+            if (blendedMagnitude < 1.0E-8) {
+                effectiveGravityX = gravityX;
+                effectiveGravityY = gravityY;
+            } else {
+                double inverseBlendedMagnitude = 1.0 / blendedMagnitude;
+                effectiveGravityX = blendedX * inverseBlendedMagnitude;
+                effectiveGravityY = blendedY * inverseBlendedMagnitude;
+            }
+        }
         double gravityStrength = BASE_GRAVITY * gravityMagnitude + agitation * AGITATION_GRAVITY;
         double inertiaStrength = agitation * INERTIA_ACCELERATION;
-
+        double accelerationX = effectiveGravityX * gravityStrength + inertiaX * inertiaStrength;
+        double accelerationY = effectiveGravityY * gravityStrength + inertiaY * inertiaStrength;
 
         buildSpatialIndex(positionX, positionY);
         applyViscosity(agitation);
 
         double damping = lerp(BASE_DAMPING, AGITATED_DAMPING, agitation);
         for (int i = 0; i < particleCount; i++) {
-            double accelerationX = effectiveGravity.x() * gravityStrength + inertiaDirection.x() * inertiaStrength;
-            double accelerationY = effectiveGravity.y() * gravityStrength + inertiaDirection.y() * inertiaStrength;
-            velocityX[i] = (velocityX[i] + accelerationX * FIXED_TICK) * damping;
-            velocityY[i] = (velocityY[i] + accelerationY * FIXED_TICK) * damping;
-            predictedX[i] = positionX[i] + velocityX[i] * FIXED_TICK;
-            predictedY[i] = positionY[i] + velocityY[i] * FIXED_TICK;
+            velocityX[i] = (velocityX[i] + accelerationX * fixedTick) * damping;
+            velocityY[i] = (velocityY[i] + accelerationY * fixedTick) * damping;
+            predictedX[i] = positionX[i] + velocityX[i] * fixedTick;
+            predictedY[i] = positionY[i] + velocityY[i] * fixedTick;
             constrainToBoundary(i, predictedX, predictedY, true, agitation);
         }
 
-        for (int iteration = 0; iteration < RELAXATION_ITERATIONS; iteration++) {
+        for (int iteration = 0; iteration < relaxationIterations; iteration++) {
             buildSpatialIndex(predictedX, predictedY);
             computeDensities(predictedX, predictedY);
             relaxPressure(agitation);
@@ -348,38 +387,71 @@ public final class HourglassSimulation {
             double xPrev = positionX[i];
             double yPrev = positionY[i];
 
-            velocityX[i] = (predictedX[i] - xPrev) / FIXED_TICK;
-            velocityY[i] = (predictedY[i] - yPrev) / FIXED_TICK;
-            dampenMotion(i, gravity, agitation);
+            velocityX[i] = (predictedX[i] - xPrev) / fixedTick;
+            velocityY[i] = (predictedY[i] - yPrev) / fixedTick;
+            dampenMotion(i, gravityY, agitation);
             limitSpeed(i, agitation);
             positionX[i] = predictedX[i];
             positionY[i] = predictedY[i];
             constrainVelocityAgainstBoundary(i, agitation);
 
 
-            double speed = Math.hypot(velocityX[i], velocityY[i]);
+            double speed = magnitude(velocityX[i], velocityY[i]);
             double normalizedFlow = clamp(speed / (MAX_SPEED * 0.82), 0.0, 1.0);
             flowActivity[i] = clamp(flowActivity[i] * 0.84 + normalizedFlow * 0.16, 0.0, 1.0);
         }
     }
 
     private void applyViscosity(double agitation) {
-        double response = VISCOSITY * FIXED_TICK * (0.86 + agitation * 0.24);
+        double response = VISCOSITY * fixedTick * (0.86 + agitation * 0.24);
+        double radiusSquared = smoothingRadiusSquared;
+        double radius = smoothingRadius;
         for (int i = 0; i < particleCount; i++) {
-            final int index = i;
-            forEachNeighbor(index, positionX, positionY, (j, dx, dy, distance, q) -> {
-                double influence = q * q * response;
-                double deltaVX = velocityX[j] - velocityX[index];
-                double deltaVY = velocityY[j] - velocityY[index];
-                velocityX[index] += deltaVX * influence * 0.5;
-                velocityY[index] += deltaVY * influence * 0.5;
-                velocityX[j] -= deltaVX * influence * 0.5;
-                velocityY[j] -= deltaVY * influence * 0.5;
-            });
+            double xi = positionX[i];
+            double yi = positionY[i];
+            int minCellX = Math.max(0, cellX[i] - 1);
+            int maxCellX = Math.min(gridWidth - 1, cellX[i] + 1);
+            int minCellY = Math.max(0, cellY[i] - 1);
+            int maxCellY = Math.min(gridHeight - 1, cellY[i] + 1);
+            for (int gridY = minCellY; gridY <= maxCellY; gridY++) {
+                int rowOffset = gridY * gridWidth;
+                for (int gridX = minCellX; gridX <= maxCellX; gridX++) {
+                    int other = gridHead[rowOffset + gridX];
+                    while (other >= 0) {
+                        if (other > i) {
+                            double dx = positionX[other] - xi;
+                            double dy = positionY[other] - yi;
+                            double distanceSquared = dx * dx + dy * dy;
+                            if (distanceSquared < radiusSquared) {
+                                double distance;
+                                if (distanceSquared < 1.0E-12) {
+                                    double angle = separationAngle(i, other);
+                                    dx = Math.cos(angle) * particleRadius * 0.15;
+                                    dy = Math.sin(angle) * particleRadius * 0.15;
+                                    distance = magnitude(dx, dy);
+                                } else {
+                                    distance = Math.sqrt(distanceSquared);
+                                }
+                                double q = 1.0 - distance / radius;
+                                double influence = q * q * response;
+                                double deltaVX = velocityX[other] - velocityX[i];
+                                double deltaVY = velocityY[other] - velocityY[i];
+                                double impulseX = deltaVX * influence * 0.5;
+                                double impulseY = deltaVY * influence * 0.5;
+                                velocityX[i] += impulseX;
+                                velocityY[i] += impulseY;
+                                velocityX[other] -= impulseX;
+                                velocityY[other] -= impulseY;
+                            }
+                        }
+                        other = nextInCell[other];
+                    }
+                }
+            }
         }
     }
 
-    private void buildSpatialIndex(double[] x, double y[]) {
+    private void buildSpatialIndex(double[] x, double[] y) {
         Arrays.fill(gridHead, -1);
         for (int i = 0; i < particleCount; i++) {
             int gridX = clamp((int) Math.floor((x[i] - gridMinX) / cellSize), 0, gridWidth - 1);
@@ -395,16 +467,47 @@ public final class HourglassSimulation {
     private void computeDensities(double[] x, double[] y) {
         Arrays.fill(density, SELF_DENSITY);
         Arrays.fill(nearDensity, SELF_NEAR_DENSITY);
+        double radiusSquared = smoothingRadiusSquared;
+        double radius = smoothingRadius;
         for (int i = 0; i < particleCount; i++) {
-            final int index = i;
-            forEachNeighbor(index, x, y, (j, dx, dy, distance, q) -> {
-                double q2 = q * q;
-                double q3 = q2 * q;
-                density[index] += q2;
-                density[j] += q2;
-                nearDensity[index] += q3;
-                nearDensity[j] += q3;
-            });
+            double xi = x[i];
+            double yi = y[i];
+            int minCellX = Math.max(0, cellX[i] - 1);
+            int maxCellX = Math.min(gridWidth - 1, cellX[i] + 1);
+            int minCellY = Math.max(0, cellY[i] - 1);
+            int maxCellY = Math.min(gridHeight - 1, cellY[i] + 1);
+            for (int gridY = minCellY; gridY <= maxCellY; gridY++) {
+                int rowOffset = gridY * gridWidth;
+                for (int gridX = minCellX; gridX <= maxCellX; gridX++) {
+                    int other = gridHead[rowOffset + gridX];
+                    while (other >= 0) {
+                        if (other > i) {
+                            double dx = x[other] - xi;
+                            double dy = y[other] - yi;
+                            double distanceSquared = dx * dx + dy * dy;
+                            if (distanceSquared < radiusSquared) {
+                                double distance;
+                                if (distanceSquared < 1.0E-12) {
+                                    double angle = separationAngle(i, other);
+                                    dx = Math.cos(angle) * particleRadius * 0.15;
+                                    dy = Math.sin(angle) * particleRadius * 0.15;
+                                    distance = magnitude(dx, dy);
+                                } else {
+                                    distance = Math.sqrt(distanceSquared);
+                                }
+                                double q = 1.0 - distance / radius;
+                                double q2 = q * q;
+                                double q3 = q2 * q;
+                                density[i] += q2;
+                                density[other] += q2;
+                                nearDensity[i] += q3;
+                                nearDensity[other] += q3;
+                            }
+                        }
+                        other = nextInCell[other];
+                    }
+                }
+            }
         }
         for (int i = 0; i < particleCount; i++) {
             pressure[i] = Math.max(MIN_PRESSURE, STIFFNESS * (density[i] - REST_DENSITY));
@@ -414,37 +517,67 @@ public final class HourglassSimulation {
 
     private void relaxPressure(double agitation) {
         double response = PRESSURE_RESPONSE * lightSpacing * (0.92 + agitation * 0.18);
+        double radiusSquared = smoothingRadiusSquared;
+        double radius = smoothingRadius;
         for (int i = 0; i < particleCount; i++) {
-            final int index = i;
-            forEachNeighbor(index, predictedX, predictedY, (j, dx, dy, distance, q) -> {
-                double magnitude = ((pressure[index] + pressure[j]) * q
-                        + (nearPressure[index] + nearPressure[j]) * q * q) * response;
-                double safeDistance = Math.max(distance, 1.0E-6);
-                double offsetX = dx / safeDistance * magnitude;
-                double offsetY = dy / safeDistance * magnitude;
-                predictedX[index] -= offsetX * 0.5;
-                predictedY[index] -= offsetY * 0.5;
-                predictedX[j] += offsetX * 0.5;
-                predictedY[j] += offsetY * 0.5;
-            });
+            double xi = predictedX[i];
+            double yi = predictedY[i];
+            int minCellX = Math.max(0, cellX[i] - 1);
+            int maxCellX = Math.min(gridWidth - 1, cellX[i] + 1);
+            int minCellY = Math.max(0, cellY[i] - 1);
+            int maxCellY = Math.min(gridHeight - 1, cellY[i] + 1);
+            for (int gridY = minCellY; gridY <= maxCellY; gridY++) {
+                int rowOffset = gridY * gridWidth;
+                for (int gridX = minCellX; gridX <= maxCellX; gridX++) {
+                    int other = gridHead[rowOffset + gridX];
+                    while (other >= 0) {
+                        if (other > i) {
+                            double dx = predictedX[other] - xi;
+                            double dy = predictedY[other] - yi;
+                            double distanceSquared = dx * dx + dy * dy;
+                            if (distanceSquared < radiusSquared) {
+                                double distance;
+                                if (distanceSquared < 1.0E-12) {
+                                    double angle = separationAngle(i, other);
+                                    dx = Math.cos(angle) * particleRadius * 0.15;
+                                    dy = Math.sin(angle) * particleRadius * 0.15;
+                                    distance = magnitude(dx, dy);
+                                } else {
+                                    distance = Math.sqrt(distanceSquared);
+                                }
+                                double q = 1.0 - distance / radius;
+                                double pairMagnitude = ((pressure[i] + pressure[other]) * q
+                                        + (nearPressure[i] + nearPressure[other]) * q * q) * response;
+                                double inverseDistance = 1.0 / Math.max(distance, 1.0E-6);
+                                double offsetX = dx * inverseDistance * pairMagnitude;
+                                double offsetY = dy * inverseDistance * pairMagnitude;
+                                double halfOffsetX = offsetX * 0.5;
+                                double halfOffsetY = offsetY * 0.5;
+                                predictedX[i] -= halfOffsetX;
+                                predictedY[i] -= halfOffsetY;
+                                predictedX[other] += halfOffsetX;
+                                predictedY[other] += halfOffsetY;
+                                xi = predictedX[i];
+                                yi = predictedY[i];
+                            }
+                        }
+                        other = nextInCell[other];
+                    }
+                }
+            }
         }
     }
 
-    private void dampenMotion(int index, Vector2 gravity, double agitation) {
+    private void dampenMotion(int index, double gravityY, double agitation) {
         ContactInfo contactInfo = analyzeContacts(index, predictedX, predictedY);
-        double speed = Math.hypot(velocityX[index], velocityY[index]);
+        double speed = magnitude(velocityX[index], velocityY[index]);
         if (contactInfo.contactCount() > 0) {
             double contactDamping = lerp(0.86, 0.93, agitation);
             velocityX[index] *= contactDamping;
             velocityY[index] *= contactDamping;
         }
 
-        // Apply friction to the velocity parallel to the gravity direction to stop clinging to steep walls.
-        if (contactInfo.wallContact()) {
-            // physics will naturally slide them down the 45-degree slanted walls now
-        }
-
-        if (gravity.y() > 0.20 && contactInfo.supportCount() >= 2 && speed < REST_SPEED + agitation * 0.06) {
+        if (gravityY > 0.20 && contactInfo.supportCount() >= 2 && speed < REST_SPEED + agitation * 0.06) {
             velocityX[index] *= 0.18;
             velocityY[index] *= 0.05;
             if (Math.abs(velocityX[index]) < 0.004) {
@@ -492,7 +625,6 @@ public final class HourglassSimulation {
     private void constrainToBoundary(int index, double[] x, double[] y, boolean dampVelocity, double agitation) {
         double px = x[index];
         double py = y[index];
-        double currY = positionY[index];
         double pad = paddingAt(py);
 
 
@@ -558,7 +690,7 @@ public final class HourglassSimulation {
 
     private void limitSpeed(int index, double agitation) {
         double maxSpeed = MAX_SPEED + agitation * 0.5;
-        double speed = Math.hypot(velocityX[index], velocityY[index]);
+        double speed = magnitude(velocityX[index], velocityY[index]);
         if (speed <= maxSpeed) {
             return;
         }
@@ -582,44 +714,12 @@ public final class HourglassSimulation {
         return violation;
     }
 
-    private void forEachNeighbor(int index, double[] x, double[] y, NeighborConsumer consumer) {
-        int minCellX = Math.max(0, cellX[index] - 1);
-        int maxCellX = Math.min(gridWidth - 1, cellX[index] + 1);
-        int minCellY = Math.max(0, cellY[index] - 1);
-        int maxCellY = Math.min(gridHeight - 1, cellY[index] + 1);
-        for (int gridY = minCellY; gridY <= maxCellY; gridY++) {
-            for (int gridX = minCellX; gridX <= maxCellX; gridX++) {
-                int other = gridHead[gridY * gridWidth + gridX];
-                while (other >= 0) {
-                    if (other > index) {
-                        double dx = x[other] - x[index];
-                        double dy = y[other] - y[index];
-                        double distanceSquared = dx * dx + dy * dy;
-                        if (distanceSquared < smoothingRadiusSquared) {
-                            double distance = Math.sqrt(distanceSquared);
-                            if (distance < 1.0E-6) {
-                                double angle = (index * 12.9898 + other * 78.233) * 0.5;
-                                dx = Math.cos(angle) * particleRadius * 0.15;
-                                dy = Math.sin(angle) * particleRadius * 0.15;
-                                distance = Math.max(1.0E-6, Math.hypot(dx, dy));
-                            }
-                            double q = 1.0 - distance / smoothingRadius;
-                            consumer.accept(other, dx, dy, distance, q);
-                        }
-                    }
-                    other = nextInCell[other];
-                }
-            }
-        }
+    private static double separationAngle(int index, int other) {
+        return (index * 12.9898 + other * 78.233) * 0.5;
     }
 
-    private Vector2 blend(Vector2 gravity, Vector2 inertiaDirection, double inertiaWeight) {
-        double clampedWeight = clamp(inertiaWeight, 0.0, 0.32);
-        double gravityWeight = 1.0 - clampedWeight;
-        return new Vector2(
-                gravity.x() * gravityWeight + inertiaDirection.x() * clampedWeight,
-                gravity.y() * gravityWeight + inertiaDirection.y() * clampedWeight
-        );
+    private static double magnitude(double x, double y) {
+        return Math.sqrt(x * x + y * y);
     }
 
     private static double deriveSpacing(int particleCount) {
@@ -641,15 +741,11 @@ public final class HourglassSimulation {
         return Math.max(min, Math.min(max, value));
     }
 
-    private interface NeighborConsumer {
-        void accept(int otherIndex, double dx, double dy, double distance, double q);
-    }
-
     private record SeedPoint(double x, double y) {}
     private record ContactInfo(int contactCount, int supportCount, boolean wallContact) {}
     public record Vector2(double x, double y) {
         public double magnitude() {
-            return Math.hypot(x, y);
+            return HourglassSimulation.magnitude(x, y);
         }
 
         public Vector2 normalized(double fallbackX, double fallbackY) {

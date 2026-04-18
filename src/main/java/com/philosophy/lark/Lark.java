@@ -1,6 +1,7 @@
 package com.philosophy.lark;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import javafx.animation.AnimationTimer;
@@ -14,39 +15,43 @@ import javafx.scene.shape.StrokeLineCap;
 import javafx.stage.Stage;
 import com.gluonhq.attach.accelerometer.AccelerometerService;
 
-public class Lark extends Application {
+public final class Lark extends Application {
     private static final Color BACKGROUND = Color.WHITE;
     private static final Color FOREGROUND = Color.web("#475A55");
     private static final Color LIQUID_SOFT = Color.web("#3F504B", 0.30);
     private static final Color LIQUID_SOLID = Color.web("#3E504B", 0.98);
     private static final Color LIQUID_FLOW = Color.web("#587069", 0.98);
-    private static final Color LIQUID_SHADOW = Color.web("#2B3834", 0.99);
-    private static final double REVEAL_START = 0.11;
-    private static final double REVEAL_END = 0.62;
+    private static final float REVEAL_START = 0.11f;
+    private static final float REVEAL_END = 0.62f;
 
     @Override
     public void start(Stage stage) {
-        HourglassSimulation simulation = new HourglassSimulation(LarkController.DEFAULT_LIT_COUNT, 42L);
+        LarkController.SimulationTuning simulationTuning = LarkController.simulationTuning();
+        LarkController.DisplayTuning displayTuning = LarkController.displayTuning();
+        HourglassSimulation simulation = new HourglassSimulation(LarkController.DEFAULT_LIT_COUNT, 42L, simulationTuning);
         GravityController gravityController = new GravityController();
-        HourglassDisplayField displayField = HourglassDisplayField.create(simulation);
+        HourglassDisplayField displayField = HourglassDisplayField.create(simulation, displayTuning);
 
-        Canvas canvas = new Canvas(LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT);
-        StackPane root = new StackPane(canvas);
+        Canvas frameCanvas = new Canvas(LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT);
+        Canvas fluidCanvas = new Canvas(LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT);
+        StackPane root = new StackPane(frameCanvas, fluidCanvas);
         root.setStyle("-fx-background-color: white;");
 
-        canvas.widthProperty().bind(root.widthProperty());
-        canvas.heightProperty().bind(root.heightProperty());
+        frameCanvas.widthProperty().bind(root.widthProperty());
+        frameCanvas.heightProperty().bind(root.heightProperty());
+        fluidCanvas.widthProperty().bind(root.widthProperty());
+        fluidCanvas.heightProperty().bind(root.heightProperty());
 
         Scene scene = new Scene(root, LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT, BACKGROUND);
         scene.setOnMouseMoved(event -> gravityController.updateFromPointer(
-                event.getSceneX(), event.getSceneY(), scene.getWidth(), scene.getHeight()));
+                (float)event.getSceneX(), (float)event.getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
         scene.setOnMouseDragged(event -> gravityController.updateFromPointer(
-                event.getSceneX(), event.getSceneY(), scene.getWidth(), scene.getHeight()));
+                (float)event.getSceneX(), (float)event.getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
         scene.setOnMouseExited(event -> gravityController.releasePointer());
         scene.setOnTouchPressed(event -> gravityController.updateFromPointer(
-                event.getTouchPoint().getSceneX(), event.getTouchPoint().getSceneY(), scene.getWidth(), scene.getHeight()));
+                (float)event.getTouchPoint().getSceneX(), (float)event.getTouchPoint().getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
         scene.setOnTouchMoved(event -> gravityController.updateFromPointer(
-                event.getTouchPoint().getSceneX(), event.getTouchPoint().getSceneY(), scene.getWidth(), scene.getHeight()));
+                (float)event.getTouchPoint().getSceneX(), (float)event.getTouchPoint().getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
         scene.setOnTouchReleased(event -> gravityController.releasePointer());
         scene.setOnKeyPressed(gravityController::handleKeyPressed);
         scene.setOnKeyReleased(gravityController::handleKeyReleased);
@@ -58,6 +63,9 @@ public class Lark extends Application {
         stage.show();
 
         root.requestFocus();
+        redrawStaticLayer(frameCanvas.getGraphicsContext2D());
+        frameCanvas.widthProperty().addListener((obs, oldValue, newValue) -> redrawStaticLayer(frameCanvas.getGraphicsContext2D()));
+        frameCanvas.heightProperty().addListener((obs, oldValue, newValue) -> redrawStaticLayer(frameCanvas.getGraphicsContext2D()));
 
         AccelerometerService.create().ifPresent(service -> {
             service.accelerationProperty().addListener((obs, ov, nv) -> {
@@ -65,7 +73,7 @@ public class Lark extends Application {
                     gravityController.clearSensorGravity();
                     return;
                 }
-                gravityController.updateSensorAcceleration(nv.getX(), nv.getY(), nv.getZ());
+                gravityController.updateSensorAcceleration((float)nv.getX(), (float)nv.getY(), (float)nv.getZ());
             });
             service.start();
             stage.setOnHidden(event -> service.stop());
@@ -78,76 +86,59 @@ public class Lark extends Application {
             public void handle(long now) {
                 if (lastTick == 0L) {
                     lastTick = now;
-                    render(canvas.getGraphicsContext2D(), simulation, gravityController, displayField);
+                    render(fluidCanvas.getGraphicsContext2D(), simulation, gravityController, displayField);
                     return;
                 }
 
-                double deltaSeconds = Math.min((now - lastTick) / 1_000_000_000.0, 1.0 / 25.0);
+                float rawDeltaSeconds = (float)Math.min((now - lastTick) / 1_000_000_000.0, 1.0 / 20.0);
                 lastTick = now;
+                float deltaSeconds = Math.min(rawDeltaSeconds,
+                        (float)simulationTuning.fixedTick() * (float)simulationTuning.maxPhysicsStepsPerFrame());
 
                 gravityController.step(deltaSeconds);
                 simulation.step(deltaSeconds,
-                        gravityController.current(),
+                        gravityController.currentX(),
+                        gravityController.currentY(),
                         gravityController.agitation(),
-                        gravityController.inertiaDirection());
-                render(canvas.getGraphicsContext2D(), simulation, gravityController, displayField);
+                        gravityController.inertiaX(),
+                        gravityController.inertiaY());
+                render(fluidCanvas.getGraphicsContext2D(), simulation, gravityController, displayField);
             }
         };
         timer.start();
     }
 
     public static void main(String[] args) {
-        launch();
+        launch(args);
     }
 
     private void render(GraphicsContext gc, HourglassSimulation simulation,
                         GravityController gravityController, HourglassDisplayField displayField) {
-        double width = gc.getCanvas().getWidth();
-        double height = gc.getCanvas().getHeight();
-        double scale = Math.min((width - 56.0) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15),
-                (height - 56.0) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
-        double centerX = width * 0.5;
-        double centerY = height * 0.5;
-        double baseLightSize = Math.max(1.8, simulation.getLightSize() * scale);
-        double lightSize = baseLightSize * (1.0 + gravityController.agitation() * 0.16);
+        gc.clearRect(0, 0, gc.getCanvas().getWidth(), gc.getCanvas().getHeight());
+        drawLights(gc, simulation, displayField, gravityController.agitation());
+    }
+
+    private void redrawStaticLayer(GraphicsContext gc) {
+        float width = (float)gc.getCanvas().getWidth();
+        float height = (float)gc.getCanvas().getHeight();
+        float scale = (float)Math.min((width - 56.0f) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15f),
+                (height - 56.0f) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
+        float centerX = width * 0.5f;
+        float centerY = height * 0.5f;
 
         gc.setFill(BACKGROUND);
         gc.fillRect(0, 0, width, height);
-
-        gc.save();
-        clipHourglassInterior(gc, centerX, centerY, scale);
-        drawLights(gc, simulation, displayField, centerX, centerY, lightSize, scale);
-        gc.restore();
         drawHourglassFrame(gc, centerX, centerY, scale);
     }
 
-    private void clipHourglassInterior(GraphicsContext gc, double centerX, double centerY, double scale) {
-        double radius = HourglassSimulation.DIAMOND_RADIUS * scale;
-        double topCenterY = centerY - HourglassSimulation.DIAMOND_RADIUS * scale;
-        double bottomCenterY = centerY + HourglassSimulation.DIAMOND_RADIUS * scale;
-
-        gc.beginPath();
-        gc.moveTo(centerX, topCenterY - radius);
-        gc.lineTo(centerX + radius, topCenterY);
-        gc.lineTo(centerX, topCenterY + radius);
-        gc.lineTo(centerX - radius, topCenterY);
-        closePath(gc);
-        gc.moveTo(centerX, bottomCenterY - radius);
-        gc.lineTo(centerX + radius, bottomCenterY);
-        gc.lineTo(centerX, bottomCenterY + radius);
-        gc.lineTo(centerX - radius, bottomCenterY);
-        closePath(gc);
-        gc.clip();
-    }
-
-    private void drawHourglassFrame(GraphicsContext gc, double centerX, double centerY, double scale) {
-        double radius = HourglassSimulation.DIAMOND_RADIUS * scale;
-        double topCenterY = centerY - HourglassSimulation.DIAMOND_RADIUS * scale;
-        double bottomCenterY = centerY + HourglassSimulation.DIAMOND_RADIUS * scale;
+    private void drawHourglassFrame(GraphicsContext gc, float centerX, float centerY, float scale) {
+        float radius = (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
+        float topCenterY = centerY - (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
+        float bottomCenterY = centerY + (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
 
         gc.setStroke(FOREGROUND);
         gc.setLineCap(StrokeLineCap.ROUND);
-        gc.setLineWidth(Math.max(2.0, scale * 0.012));
+        gc.setLineWidth((float)Math.max(2.0f, scale * 0.012f));
 
         gc.beginPath();
         gc.moveTo(centerX, topCenterY - radius);
@@ -171,92 +162,197 @@ public class Lark extends Application {
     }
 
     private void drawLights(GraphicsContext gc, HourglassSimulation simulation,
-                            HourglassDisplayField displayField,
-                            double centerX, double centerY, double lightSize, double scale) {
-        double cellPitch = simulation.getLightSpacing() * scale;
-        double particleSize = Math.max(2.0, Math.min(lightSize * 0.72, cellPitch * 0.74));
-        double haloSize = particleSize * 1.16;
-        double influenceRadius = displayField.influenceRadius();
-        double influenceRadiusSquared = influenceRadius * influenceRadius;
+                            HourglassDisplayField displayField, float agitation) {
+        float width = (float)gc.getCanvas().getWidth();
+        float height = (float)gc.getCanvas().getHeight();
+        float scale = (float)Math.min((width - 56.0f) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15f),
+                (height - 56.0f) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
+        float centerX = width * 0.5f;
+        float centerY = height * 0.5f;
+        float lightSize = (float)Math.max(1.8f, (float)simulation.getLightSize() * scale) * (1.0f + agitation * 0.16f);
+        float cellPitch = (float)(displayField.pointSpacing * scale);
+        float particleSize = (float)Math.max(2.0f, Math.min(lightSize * 0.72f, cellPitch * 0.74f));
+        float softParticleSize = particleSize * 0.96f;
+        float flowParticleSize = particleSize * 1.02f;
 
-        for (DisplayPoint point : displayField.points()) {
-            double occupancy = 0.0;
-            double flowEnergy = 0.0;
-            for (int i = 0; i < simulation.getLightCount(); i++) {
-                if (!simulation.isLit(i)) {
-                    continue;
-                }
-                double dx = simulation.getLightX(i) - point.x();
-                double dy = simulation.getLightY(i) - point.y();
-                double distanceSquared = dx * dx + dy * dy;
-                if (distanceSquared >= influenceRadiusSquared) {
-                    continue;
-                }
-
-                double distance = Math.sqrt(distanceSquared);
-                double weight = 1.0 - distance / influenceRadius;
-                double contribution = weight * weight;
-                occupancy += contribution;
-                flowEnergy += contribution * simulation.getLightFlowIntensity(i);
-            }
-
-            double filled = clamp(occupancy * 0.82, 0.0, 1.0);
-            double reveal = smoothstep(REVEAL_START, REVEAL_END, filled);
-            if (reveal <= 0.01) {
+        displayField.accumulate(simulation);
+        int softCount = 0;
+        int solidCount = 0;
+        int flowCount = 0;
+        for (int i = 0; i < displayField.pointX.length; i++) {
+            float occupancy = displayField.occupancy[i];
+            float filled = clamp(occupancy * 0.82f, 0.0f, 1.0f);
+            float reveal = smoothstep(REVEAL_START, REVEAL_END, filled);
+            if (reveal <= 0.01f) {
                 continue;
             }
+            float flowRatio = occupancy <= 1.0E-9f ? 0.0f : displayField.flowEnergy[i] / occupancy;
+            if (flowRatio >= 0.56f && reveal >= 0.24f) {
+                displayField.flowIndices[flowCount++] = i;
+            } else if (reveal >= 0.52f) {
+                displayField.solidIndices[solidCount++] = i;
+            } else {
+                displayField.softIndices[softCount++] = i;
+            }
+        }
 
-            double x = centerX + point.x() * scale;
-            double y = centerY + point.y() * scale;
+        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.softIndices, softCount,
+                centerX, centerY, scale, softParticleSize, LIQUID_SOFT);
+        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.solidIndices, solidCount,
+                centerX, centerY, scale, particleSize, LIQUID_SOLID);
+        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.flowIndices, flowCount,
+                centerX, centerY, scale, flowParticleSize, LIQUID_FLOW);
+    }
 
-            gc.setFill(withOpacity(LIQUID_SOLID, reveal));
-            gc.fillRect(x - particleSize * 0.5, y - particleSize * 0.5, particleSize, particleSize);
+    private void drawBucket(GraphicsContext gc, float[] pointX, float[] pointY, int[] indices, int count,
+                            float centerX, float centerY, float scale, float particleSize, Color color) {
+        if (count <= 0) {
+            return;
+        }
+        gc.setFill(color);
+        for (int i = 0; i < count; i++) {
+            int index = indices[i];
+            float x = centerX + pointX[index] * scale;
+            float y = centerY + pointY[index] * scale;
+            gc.fillRect(x - particleSize * 0.5f, y - particleSize * 0.5f, particleSize, particleSize);
         }
     }
 
-    private static double smoothstep(double edge0, double edge1, double value) {
+    private static float smoothstep(float edge0, float edge1, float value) {
         if (edge0 == edge1) {
-            return value >= edge1 ? 1.0 : 0.0;
+            return value >= edge1 ? 1.0f : 0.0f;
         }
-        double normalized = clamp((value - edge0) / (edge1 - edge0), 0.0, 1.0);
-        return normalized * normalized * (3.0 - 2.0 * normalized);
+        float normalized = clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return normalized * normalized * (3.0f - 2.0f * normalized);
     }
 
-    private static double clamp(double value, double min, double max) {
+    private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
     }
 
-    private static Color withOpacity(Color color, double opacity) {
-        return new Color(color.getRed(), color.getGreen(), color.getBlue(), clamp(opacity, 0.0, 1.0));
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
-    private record DisplayPoint(double x, double y) {
-    }
+    private static final class HourglassDisplayField {
+        final float[] pointX;
+        final float[] pointY;
+        final float[] occupancy;
+        final float[] flowEnergy;
+        final int[] nextInCell;
+        final int[] gridHead;
+        final int[] softIndices;
+        final int[] solidIndices;
+        final int[] flowIndices;
+        final float pointSpacing;
+        final float influenceRadius;
+        final float influenceRadiusSquared;
+        final float cellSize;
+        final float gridMinX;
+        final float gridMinY;
+        final int gridWidth;
+        final int gridHeight;
 
-    private record HourglassDisplayField(DisplayPoint[] points, double influenceRadius) {
-        private static HourglassDisplayField create(HourglassSimulation simulation) {
-            double spacing = simulation.getLightSpacing();
-            double rowStep = spacing * Math.sqrt(3.0) * 0.5;
-            List<DisplayPoint> points = new ArrayList<>();
+        HourglassDisplayField(float[] pointX, float[] pointY, float pointSpacing, float influenceRadius) {
+            this.pointX = pointX;
+            this.pointY = pointY;
+            this.occupancy = new float[pointX.length];
+            this.flowEnergy = new float[pointX.length];
+            this.nextInCell = new int[pointX.length];
+            this.softIndices = new int[pointX.length];
+            this.solidIndices = new int[pointX.length];
+            this.flowIndices = new int[pointX.length];
+            this.pointSpacing = pointSpacing;
+            this.influenceRadius = influenceRadius;
+            this.influenceRadiusSquared = influenceRadius * influenceRadius;
+            this.cellSize = influenceRadius;
+            this.gridMinX = (float)(-HourglassSimulation.MAX_HALF_WIDTH - influenceRadius * 2.0f);
+            this.gridMinY = (float) HourglassSimulation.WORLD_TOP - influenceRadius * 2.0f;
+            this.gridWidth = Math.max(4,
+                    (int) Math.ceil((HourglassSimulation.MAX_HALF_WIDTH * 2.0f + influenceRadius * 4.0f) / cellSize));
+            this.gridHeight = Math.max(4,
+                    (int) Math.ceil(((float) HourglassSimulation.WORLD_BOTTOM - (float) HourglassSimulation.WORLD_TOP + influenceRadius * 4.0f) / cellSize));
+            this.gridHead = new int[gridWidth * gridHeight];
+            rebuildSpatialIndex();
+        }
+
+        static HourglassDisplayField create(HourglassSimulation simulation, LarkController.DisplayTuning tuning) {
+            float spacing = (float)(simulation.getLightSpacing() * tuning.pointSpacingScale());
+            float rowStep = spacing * (float)Math.sqrt(3.0f) * 0.5f;
+            List<float[]> points = new ArrayList<>();
             int rowIndex = 0;
 
-            for (double y = HourglassSimulation.WORLD_TOP + spacing * 1.25;
-                 y <= HourglassSimulation.WORLD_BOTTOM - spacing * 1.25;
+            for (float y = (float) HourglassSimulation.WORLD_TOP + spacing * 1.25f;
+                 y <= (float) HourglassSimulation.WORLD_BOTTOM - spacing * 1.25f;
                  y += rowStep, rowIndex++) {
-                double halfWidth = HourglassSimulation.halfWidthAt(y) - spacing * 0.38;
-                if (halfWidth <= spacing * 0.28) {
+                float halfWidth = (float)(HourglassSimulation.halfWidthAt(y) - spacing * 0.42f);
+                if (halfWidth <= spacing * 0.28f) {
                     continue;
                 }
 
-                double offset = ((rowIndex & 1) == 0) ? 0.0 : spacing * 0.5;
-                for (double x = -halfWidth + offset; x <= halfWidth + 1.0E-9; x += spacing) {
+                float offset = ((rowIndex & 1) == 0) ? 0.0f : spacing * 0.5f;
+                for (float x = -halfWidth + offset; x <= halfWidth + 1.0E-9f; x += spacing) {
                     if (HourglassSimulation.isInsideHourglass(x, y)) {
-                        points.add(new DisplayPoint(x, y));
+                        points.add(new float[]{x, y});
                     }
                 }
             }
 
-            return new HourglassDisplayField(points.toArray(new DisplayPoint[0]), spacing * 1.55);
+            float[] pointX = new float[points.size()];
+            float[] pointY = new float[points.size()];
+            for (int i = 0; i < points.size(); i++) {
+                float[] point = points.get(i);
+                pointX[i] = point[0];
+                pointY[i] = point[1];
+            }
+            return new HourglassDisplayField(pointX, pointY, spacing, (float)(spacing * tuning.influenceRadiusScale()));
+        }
+
+        void rebuildSpatialIndex() {
+            Arrays.fill(gridHead, -1);
+            for (int i = 0; i < pointX.length; i++) {
+                int gridX = clamp((int) Math.floor((pointX[i] - gridMinX) / cellSize), 0, gridWidth - 1);
+                int gridY = clamp((int) Math.floor((pointY[i] - gridMinY) / cellSize), 0, gridHeight - 1);
+                int cell = gridY * gridWidth + gridX;
+                nextInCell[i] = gridHead[cell];
+                gridHead[cell] = i;
+            }
+        }
+
+        void accumulate(HourglassSimulation simulation) {
+            Arrays.fill(occupancy, 0.0f);
+            Arrays.fill(flowEnergy, 0.0f);
+            for (int i = 0; i < simulation.getLightCount(); i++) {
+                if (!simulation.isLit(i)) {
+                    continue;
+                }
+                float lightX = (float) simulation.getLightX(i);
+                float lightY = (float) simulation.getLightY(i);
+                float lightFlow = (float) simulation.getLightFlowIntensity(i);
+                int minCellX = clamp((int) Math.floor((lightX - influenceRadius - gridMinX) / cellSize), 0, gridWidth - 1);
+                int maxCellX = clamp((int) Math.floor((lightX + influenceRadius - gridMinX) / cellSize), 0, gridWidth - 1);
+                int minCellY = clamp((int) Math.floor((lightY - influenceRadius - gridMinY) / cellSize), 0, gridHeight - 1);
+                int maxCellY = clamp((int) Math.floor((lightY + influenceRadius - gridMinY) / cellSize), 0, gridHeight - 1);
+                for (int gy = minCellY; gy <= maxCellY; gy++) {
+                    int row = gy * gridWidth;
+                    for (int gx = minCellX; gx <= maxCellX; gx++) {
+                        int idx = gridHead[row + gx];
+                        while (idx >= 0) {
+                            float dx = pointX[idx] - lightX;
+                            float dy = pointY[idx] - lightY;
+                            float distSq = dx * dx + dy * dy;
+                            if (distSq < influenceRadiusSquared) {
+                                float dist = (float)Math.sqrt(distSq);
+                                float w = 1.0f - dist / influenceRadius;
+                                float c = w * w;
+                                occupancy[idx] += c;
+                                flowEnergy[idx] += c * lightFlow;
+                            }
+                            idx = nextInCell[idx];
+                        }
+                    }
+                }
+            }
         }
     }
 }
