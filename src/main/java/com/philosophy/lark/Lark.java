@@ -144,7 +144,7 @@ public class Lark extends Application {
         double radius = HourglassSimulation.DIAMOND_RADIUS * scale;
         double topCenterY = centerY - HourglassSimulation.DIAMOND_RADIUS * scale;
         double bottomCenterY = centerY + HourglassSimulation.DIAMOND_RADIUS * scale;
-        
+
         gc.setStroke(FOREGROUND);
         gc.setLineCap(StrokeLineCap.ROUND);
         gc.setLineWidth(Math.max(2.0, scale * 0.012));
