@@ -17,10 +17,10 @@ import com.gluonhq.attach.accelerometer.AccelerometerService;
 
 public final class Lark extends Application {
     private static final Color BACKGROUND = Color.WHITE;
-    private static final Color FOREGROUND = Color.web("#475A55");
-    private static final Color LIQUID_SOFT = Color.web("#3F504B", 0.30);
-    private static final Color LIQUID_SOLID = Color.web("#3E504B", 0.98);
-    private static final Color LIQUID_FLOW = Color.web("#587069", 0.98);
+    private static final Color FOREGROUND = Color.web("#54626F");      // 暮色蓝
+    private static final Color LIQUID_SOFT = Color.web("#7A868F", 0.30); // 稀释蓝灰
+    private static final Color LIQUID_SOLID = Color.web("#64737E", 0.98); // 固体钢蓝
+    private static final Color LIQUID_FLOW = Color.web("#8BA0B0", 0.98);
     private static final float REVEAL_START = 0.11f;
     private static final float REVEAL_END = 0.62f;
     private static final float CONTOUR_GRID_SCALE = 0.5f;

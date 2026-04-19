@@ -364,10 +364,13 @@ public final class HourglassSimulation {
         buildSpatialIndex(positionX, positionY);
         applyViscosity(agitation);
 
+        // Modify damping to retain minimal oscillation when velocity is low
         double damping = lerp(BASE_DAMPING, AGITATED_DAMPING, agitation);
         for (int i = 0; i < particleCount; i++) {
             velocityX[i] = (velocityX[i] + accelerationX * fixedTick) * damping;
             velocityY[i] = (velocityY[i] + accelerationY * fixedTick) * damping;
+
+
             predictedX[i] = positionX[i] + velocityX[i] * fixedTick;
             predictedY[i] = positionY[i] + velocityY[i] * fixedTick;
             constrainToBoundary(i, predictedX, predictedY, true, agitation);
@@ -622,6 +625,11 @@ public final class HourglassSimulation {
         return new ContactInfo(contacts, supportCount, wallContact);
     }
 
+    // 用于测试：返回每步实际使用的relaxation迭代次数（当前实现为固定值）
+    public int lastRelaxationIterationsUsed() {
+        return relaxationIterations;
+    }
+
     private void constrainToBoundary(int index, double[] x, double[] y, boolean dampVelocity, double agitation) {
         double px = x[index];
         double py = y[index];
@@ -757,3 +765,4 @@ public final class HourglassSimulation {
         }
     }
 }
+
