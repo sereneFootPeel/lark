@@ -118,6 +118,42 @@ public final class Lark extends Application {
                         GravityController gravityController, HourglassDisplayField displayField) {
         gc.clearRect(0, 0, gc.getCanvas().getWidth(), gc.getCanvas().getHeight());
         drawLights(gc, simulation, displayField, gravityController.agitation());
+        // 沿沙漏边界外部画一圈背景色遮罩，遮住溢出边界的粒子
+        float width = (float)gc.getCanvas().getWidth();
+        float height = (float)gc.getCanvas().getHeight();
+        float scale = (float)Math.min((width - 56.0f) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15f),
+                (height - 56.0f) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
+        float centerX = width * 0.5f;
+        float centerY = height * 0.5f;
+        drawHourglassMask(gc, centerX, centerY, scale);
+        drawHourglassFrame(gc, centerX, centerY, scale);
+    }
+
+    // 沿沙漏边界外部画一圈背景色遮罩，遮住溢出边界的粒子
+    private void drawHourglassMask(GraphicsContext gc, float centerX, float centerY, float scale) {
+        float radius = (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
+        float topCenterY = centerY - (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
+        float bottomCenterY = centerY + (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
+
+        gc.setStroke(BACKGROUND);
+        gc.setLineCap(StrokeLineCap.ROUND);
+        gc.setLineWidth((float)Math.max(8.0f, scale * 0.048f));
+
+        gc.beginPath();
+        gc.moveTo(centerX, topCenterY - radius);
+        gc.lineTo(centerX + radius, topCenterY);
+        gc.lineTo(centerX, topCenterY + radius);
+        gc.lineTo(centerX - radius, topCenterY);
+        closePath(gc);
+        gc.stroke();
+
+        gc.beginPath();
+        gc.moveTo(centerX, bottomCenterY - radius);
+        gc.lineTo(centerX + radius, bottomCenterY);
+        gc.lineTo(centerX, bottomCenterY + radius);
+        gc.lineTo(centerX - radius, bottomCenterY);
+        closePath(gc);
+        gc.stroke();
     }
 
     private void redrawStaticLayer(GraphicsContext gc) {
@@ -583,3 +619,4 @@ public final class Lark extends Application {
         }
     }
 }
+

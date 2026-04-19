@@ -90,7 +90,7 @@ public final class HourglassSimulation {
         this.particleRadius = lightSpacing * 0.14;
 
         // 显式缩减物理边界，形成显著的白边
-        this.boundaryPadding = 0.06;
+        this.boundaryPadding = 0.07;
 
         this.lightSize = lightSpacing * LIGHT_SCALE;
         this.smoothingRadius = lightSpacing * SMOOTHING_RADIUS_SCALE;
