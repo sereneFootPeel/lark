@@ -23,6 +23,8 @@ public final class Lark extends Application {
     private static final Color LIQUID_FLOW = Color.web("#587069", 0.98);
     private static final float REVEAL_START = 0.11f;
     private static final float REVEAL_END = 0.62f;
+    private static final float CONTOUR_GRID_SCALE = 0.5f;
+    private static final float CONTOUR_BASE_STRENGTH = 0.18f;
 
     @Override
     public void start(Stage stage) {
@@ -176,6 +178,7 @@ public final class Lark extends Application {
         float flowParticleSize = particleSize * 1.02f;
 
         displayField.accumulate(simulation);
+        Arrays.fill(displayField.reveal, 0.0f);
         int softCount = 0;
         int solidCount = 0;
         int flowCount = 0;
@@ -183,6 +186,7 @@ public final class Lark extends Application {
             float occupancy = displayField.occupancy[i];
             float filled = clamp(occupancy * 0.82f, 0.0f, 1.0f);
             float reveal = smoothstep(REVEAL_START, REVEAL_END, filled);
+            displayField.reveal[i] = reveal;
             if (reveal <= 0.01f) {
                 continue;
             }
@@ -196,26 +200,193 @@ public final class Lark extends Application {
             }
         }
 
-        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.softIndices, softCount,
-                centerX, centerY, scale, softParticleSize, LIQUID_SOFT);
-        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.solidIndices, solidCount,
-                centerX, centerY, scale, particleSize, LIQUID_SOLID);
-        drawBucket(gc, displayField.pointX, displayField.pointY, displayField.flowIndices, flowCount,
-                centerX, centerY, scale, flowParticleSize, LIQUID_FLOW);
+        drawBucket(gc, displayField, displayField.softIndices, softCount,
+                centerX, centerY, scale, softParticleSize, LIQUID_SOFT, 0.18f, 1.22f);
+        drawBucket(gc, displayField, displayField.solidIndices, solidCount,
+                centerX, centerY, scale, particleSize, LIQUID_SOLID, 0.22f, 1.08f);
+        drawBucket(gc, displayField, displayField.flowIndices, flowCount,
+                centerX, centerY, scale, flowParticleSize, LIQUID_FLOW, 0.20f, 1.12f);
     }
 
-    private void drawBucket(GraphicsContext gc, float[] pointX, float[] pointY, int[] indices, int count,
-                            float centerX, float centerY, float scale, float particleSize, Color color) {
+    private void drawBucket(GraphicsContext gc, HourglassDisplayField displayField, int[] indices, int count,
+                            float centerX, float centerY, float scale, float particleSize, Color color,
+                            float contourThreshold, float contourRadiusScale) {
         if (count <= 0) {
             return;
         }
+
+        float worldRadius = Math.max(displayField.pointSpacing * contourRadiusScale,
+                particleSize / Math.max(scale, 1.0E-4f) * 0.82f);
+        displayField.populateContourField(indices, count, worldRadius);
+
         gc.setFill(color);
-        for (int i = 0; i < count; i++) {
-            int index = indices[i];
-            float x = centerX + pointX[index] * scale;
-            float y = centerY + pointY[index] * scale;
-            gc.fillRect(x - particleSize * 0.5f, y - particleSize * 0.5f, particleSize, particleSize);
+        gc.beginPath();
+        boolean hasArea = false;
+        float cellSize = displayField.contourSpacing * scale;
+        for (int y = 0; y < displayField.contourHeight - 1; y++) {
+            float top = centerY + (displayField.contourMinY + y * displayField.contourSpacing) * scale;
+            for (int x = 0; x < displayField.contourWidth - 1; x++) {
+                int row = y * displayField.contourWidth + x;
+                float topLeft = displayField.contourField[row];
+                float topRight = displayField.contourField[row + 1];
+                float bottomLeft = displayField.contourField[row + displayField.contourWidth];
+                float bottomRight = displayField.contourField[row + displayField.contourWidth + 1];
+
+                int caseIndex = 0;
+                if (topLeft >= contourThreshold) {
+                    caseIndex |= 8;
+                }
+                if (topRight >= contourThreshold) {
+                    caseIndex |= 4;
+                }
+                if (bottomRight >= contourThreshold) {
+                    caseIndex |= 2;
+                }
+                if (bottomLeft >= contourThreshold) {
+                    caseIndex |= 1;
+                }
+                if (caseIndex == 0) {
+                    continue;
+                }
+
+                float left = centerX + (displayField.contourMinX + x * displayField.contourSpacing) * scale;
+                hasArea |= appendContourCell(gc, caseIndex, left, top, cellSize);
+            }
         }
+        if (hasArea) {
+            gc.fill();
+        }
+    }
+
+    private boolean appendContourCell(GraphicsContext gc, int caseIndex, float left, float top, float size) {
+        float right = left + size;
+        float bottom = top + size;
+        float midX = left + size * 0.5f;
+        float midY = top + size * 0.5f;
+
+        switch (caseIndex) {
+            case 1 -> {
+                gc.moveTo(left, bottom);
+                gc.lineTo(left, midY);
+                gc.quadraticCurveTo(left, bottom, midX, bottom);
+                closePath(gc);
+                return true;
+            }
+            case 2 -> {
+                gc.moveTo(right, bottom);
+                gc.lineTo(midX, bottom);
+                gc.quadraticCurveTo(right, bottom, right, midY);
+                closePath(gc);
+                return true;
+            }
+            case 3 -> {
+                appendPolygon(gc, left, bottom, left, midY, right, midY, right, bottom);
+                return true;
+            }
+            case 4 -> {
+                gc.moveTo(right, top);
+                gc.lineTo(right, midY);
+                gc.quadraticCurveTo(right, top, midX, top);
+                closePath(gc);
+                return true;
+            }
+            case 5 -> {
+                gc.moveTo(left, bottom);
+                gc.lineTo(left, midY);
+                gc.quadraticCurveTo(left, bottom, midX, bottom);
+                closePath(gc);
+                gc.moveTo(right, top);
+                gc.lineTo(right, midY);
+                gc.quadraticCurveTo(right, top, midX, top);
+                closePath(gc);
+                return true;
+            }
+            case 6 -> {
+                appendPolygon(gc, midX, top, right, top, right, bottom, midX, bottom);
+                return true;
+            }
+            case 7 -> {
+                gc.moveTo(left, top);
+                gc.lineTo(midX, top);
+                gc.quadraticCurveTo(right, top, right, midY);
+                gc.lineTo(right, bottom);
+                gc.lineTo(left, bottom);
+                closePath(gc);
+                return true;
+            }
+            case 8 -> {
+                gc.moveTo(left, top);
+                gc.lineTo(midX, top);
+                gc.quadraticCurveTo(left, top, left, midY);
+                closePath(gc);
+                return true;
+            }
+            case 9 -> {
+                appendPolygon(gc, left, top, midX, top, midX, bottom, left, bottom);
+                return true;
+            }
+            case 10 -> {
+                gc.moveTo(left, top);
+                gc.lineTo(midX, top);
+                gc.quadraticCurveTo(left, top, left, midY);
+                closePath(gc);
+                gc.moveTo(right, bottom);
+                gc.lineTo(midX, bottom);
+                gc.quadraticCurveTo(right, bottom, right, midY);
+                closePath(gc);
+                return true;
+            }
+            case 11 -> {
+                gc.moveTo(left, top);
+                gc.lineTo(right, top);
+                gc.lineTo(right, midY);
+                gc.quadraticCurveTo(right, bottom, midX, bottom);
+                gc.lineTo(left, bottom);
+                closePath(gc);
+                return true;
+            }
+            case 12 -> {
+                appendPolygon(gc, left, top, right, top, right, midY, left, midY);
+                return true;
+            }
+            case 13 -> {
+                gc.moveTo(left, top);
+                gc.lineTo(right, top);
+                gc.lineTo(right, bottom);
+                gc.lineTo(midX, bottom);
+                gc.quadraticCurveTo(left, bottom, left, midY);
+                closePath(gc);
+                return true;
+            }
+            case 14 -> {
+                gc.moveTo(midX, top);
+                gc.lineTo(right, top);
+                gc.lineTo(right, bottom);
+                gc.lineTo(left, bottom);
+                gc.lineTo(left, midY);
+                gc.quadraticCurveTo(left, top, midX, top);
+                closePath(gc);
+                return true;
+            }
+            case 15 -> {
+                appendPolygon(gc, left, top, right, top, right, bottom, left, bottom);
+                return true;
+            }
+            default -> {
+                return false;
+            }
+        }
+    }
+
+    private void appendPolygon(GraphicsContext gc, float... coordinates) {
+        if (coordinates.length < 6 || (coordinates.length & 1) != 0) {
+            return;
+        }
+        gc.moveTo(coordinates[0], coordinates[1]);
+        for (int i = 2; i < coordinates.length; i += 2) {
+            gc.lineTo(coordinates[i], coordinates[i + 1]);
+        }
+        closePath(gc);
     }
 
     private static float smoothstep(float edge0, float edge1, float value) {
@@ -239,6 +410,7 @@ public final class Lark extends Application {
         final float[] pointY;
         final float[] occupancy;
         final float[] flowEnergy;
+        final float[] reveal;
         final int[] nextInCell;
         final int[] gridHead;
         final int[] softIndices;
@@ -252,12 +424,19 @@ public final class Lark extends Application {
         final float gridMinY;
         final int gridWidth;
         final int gridHeight;
+        final float contourMinX;
+        final float contourMinY;
+        final float contourSpacing;
+        final int contourWidth;
+        final int contourHeight;
+        final float[] contourField;
 
         HourglassDisplayField(float[] pointX, float[] pointY, float pointSpacing, float influenceRadius) {
             this.pointX = pointX;
             this.pointY = pointY;
             this.occupancy = new float[pointX.length];
             this.flowEnergy = new float[pointX.length];
+            this.reveal = new float[pointX.length];
             this.nextInCell = new int[pointX.length];
             this.softIndices = new int[pointX.length];
             this.solidIndices = new int[pointX.length];
@@ -273,6 +452,14 @@ public final class Lark extends Application {
             this.gridHeight = Math.max(4,
                     (int) Math.ceil(((float) HourglassSimulation.WORLD_BOTTOM - (float) HourglassSimulation.WORLD_TOP + influenceRadius * 4.0f) / cellSize));
             this.gridHead = new int[gridWidth * gridHeight];
+            this.contourSpacing = Math.max(pointSpacing * CONTOUR_GRID_SCALE, 1.0E-4f);
+            this.contourMinX = (float)(-HourglassSimulation.MAX_HALF_WIDTH - pointSpacing * 1.5f);
+            this.contourMinY = (float) HourglassSimulation.WORLD_TOP - pointSpacing * 1.5f;
+            this.contourWidth = Math.max(4,
+                    (int) Math.ceil((HourglassSimulation.MAX_HALF_WIDTH * 2.0f + pointSpacing * 3.0f) / contourSpacing) + 1);
+            this.contourHeight = Math.max(4,
+                    (int) Math.ceil(((float) HourglassSimulation.WORLD_BOTTOM - (float) HourglassSimulation.WORLD_TOP + pointSpacing * 3.0f) / contourSpacing) + 1);
+            this.contourField = new float[contourWidth * contourHeight];
             rebuildSpatialIndex();
         }
 
@@ -351,6 +538,46 @@ public final class Lark extends Application {
                             idx = nextInCell[idx];
                         }
                     }
+                }
+            }
+        }
+
+        void populateContourField(int[] indices, int count, float radius) {
+            Arrays.fill(contourField, 0.0f);
+            if (count <= 0 || radius <= 1.0E-6f) {
+                return;
+            }
+
+            float radiusSquared = radius * radius;
+            for (int i = 0; i < count; i++) {
+                int index = indices[i];
+                float strength = CONTOUR_BASE_STRENGTH + reveal[index] * 0.82f;
+                accumulateContourPoint(index, radius, radiusSquared, strength);
+            }
+        }
+
+        private void accumulateContourPoint(int index, float radius, float radiusSquared, float strength) {
+            float px = pointX[index];
+            float py = pointY[index];
+            int minX = clamp((int) Math.floor((px - radius - contourMinX) / contourSpacing), 0, contourWidth - 1);
+            int maxX = clamp((int) Math.floor((px + radius - contourMinX) / contourSpacing), 0, contourWidth - 1);
+            int minY = clamp((int) Math.floor((py - radius - contourMinY) / contourSpacing), 0, contourHeight - 1);
+            int maxY = clamp((int) Math.floor((py + radius - contourMinY) / contourSpacing), 0, contourHeight - 1);
+
+            for (int gy = minY; gy <= maxY; gy++) {
+                float sampleY = contourMinY + gy * contourSpacing;
+                int row = gy * contourWidth;
+                for (int gx = minX; gx <= maxX; gx++) {
+                    float sampleX = contourMinX + gx * contourSpacing;
+                    float dx = sampleX - px;
+                    float dy = sampleY - py;
+                    float distanceSquared = dx * dx + dy * dy;
+                    if (distanceSquared > radiusSquared) {
+                        continue;
+                    }
+
+                    float normalized = 1.0f - distanceSquared / radiusSquared;
+                    contourField[row + gx] += strength * normalized * normalized;
                 }
             }
         }
