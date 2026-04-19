@@ -26,6 +26,8 @@ public final class Lark extends Application {
     private static final float REVEAL_END = 0.62f;
     private static final float CONTOUR_GRID_SCALE = 0.5f;
     private static final float CONTOUR_BASE_STRENGTH = 0.18f;
+    private static final float THROAT_MASK_TRIM_LINE_SCALE = 3.10f;
+    private static final float THROAT_MASK_TRIM_WORLD_SCALE = 0.170f;
 
     @Override
     public void start(Stage stage) {
@@ -152,7 +154,7 @@ public final class Lark extends Application {
         gc.setStroke(BACKGROUND);
         gc.setLineCap(StrokeLineCap.ROUND);
         float lineWidth = (float)Math.max(8.0f, scale * 0.048f);
-        float throatTrim = Math.max(lineWidth * 1.15f, scale * 0.06f);
+        float throatTrim = Math.max(lineWidth * THROAT_MASK_TRIM_LINE_SCALE, scale * THROAT_MASK_TRIM_WORLD_SCALE);
         gc.setLineWidth(lineWidth);
 
         float topX = centerX;
