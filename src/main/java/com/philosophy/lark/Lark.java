@@ -11,6 +11,7 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
+import javafx.scene.shape.FillRule;
 import javafx.scene.shape.StrokeLineCap;
 import javafx.stage.Stage;
 import com.gluonhq.attach.accelerometer.AccelerometerService;
@@ -131,29 +132,53 @@ public final class Lark extends Application {
 
     // 沿沙漏边界外部画一圈背景色遮罩，遮住溢出边界的粒子
     private void drawHourglassMask(GraphicsContext gc, float centerX, float centerY, float scale) {
+        float width = (float)gc.getCanvas().getWidth();
+        float height = (float)gc.getCanvas().getHeight();
         float radius = (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
         float topCenterY = centerY - (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
         float bottomCenterY = centerY + (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
 
+        gc.save();
+        gc.setFill(BACKGROUND);
+        gc.setFillRule(FillRule.EVEN_ODD);
+        gc.beginPath();
+        gc.rect(0.0, 0.0, width, height);
+        appendDiamondPath(gc, centerX, topCenterY, radius);
+        appendDiamondPath(gc, centerX, bottomCenterY, radius);
+        gc.fill();
+        gc.restore();
+
+        gc.save();
         gc.setStroke(BACKGROUND);
         gc.setLineCap(StrokeLineCap.ROUND);
-        gc.setLineWidth((float)Math.max(8.0f, scale * 0.048f));
+        float lineWidth = (float)Math.max(8.0f, scale * 0.048f);
+        float throatTrim = Math.max(lineWidth * 1.15f, scale * 0.06f);
+        gc.setLineWidth(lineWidth);
 
-        gc.beginPath();
-        gc.moveTo(centerX, topCenterY - radius);
-        gc.lineTo(centerX + radius, topCenterY);
-        gc.lineTo(centerX, topCenterY + radius);
-        gc.lineTo(centerX - radius, topCenterY);
-        closePath(gc);
-        gc.stroke();
+        float topX = centerX;
+        float topY = topCenterY - radius;
+        float throatX = centerX;
+        float throatY = centerY;
+        float bottomX = centerX;
+        float bottomY = bottomCenterY + radius;
+        float rightTopX = centerX + radius;
+        float rightTopY = topCenterY;
+        float leftTopX = centerX - radius;
+        float leftTopY = topCenterY;
+        float rightBottomX = centerX + radius;
+        float rightBottomY = bottomCenterY;
+        float leftBottomX = centerX - radius;
+        float leftBottomY = bottomCenterY;
 
-        gc.beginPath();
-        gc.moveTo(centerX, bottomCenterY - radius);
-        gc.lineTo(centerX + radius, bottomCenterY);
-        gc.lineTo(centerX, bottomCenterY + radius);
-        gc.lineTo(centerX - radius, bottomCenterY);
-        closePath(gc);
-        gc.stroke();
+        strokeTrimmedSegment(gc, topX, topY, rightTopX, rightTopY, 0.0f, 0.0f);
+        strokeTrimmedSegment(gc, topX, topY, leftTopX, leftTopY, 0.0f, 0.0f);
+        strokeTrimmedSegment(gc, rightTopX, rightTopY, throatX, throatY, 0.0f, throatTrim);
+        strokeTrimmedSegment(gc, leftTopX, leftTopY, throatX, throatY, 0.0f, throatTrim);
+        strokeTrimmedSegment(gc, rightBottomX, rightBottomY, bottomX, bottomY, 0.0f, 0.0f);
+        strokeTrimmedSegment(gc, leftBottomX, leftBottomY, bottomX, bottomY, 0.0f, 0.0f);
+        strokeTrimmedSegment(gc, throatX, throatY, rightBottomX, rightBottomY, throatTrim, 0.0f);
+        strokeTrimmedSegment(gc, throatX, throatY, leftBottomX, leftBottomY, throatTrim, 0.0f);
+        gc.restore();
     }
 
     private void redrawStaticLayer(GraphicsContext gc) {
@@ -179,19 +204,40 @@ public final class Lark extends Application {
         gc.setLineWidth((float)Math.max(2.0f, scale * 0.012f));
 
         gc.beginPath();
-        gc.moveTo(centerX, topCenterY - radius);
-        gc.lineTo(centerX + radius, topCenterY);
-        gc.lineTo(centerX, topCenterY + radius);
-        gc.lineTo(centerX - radius, topCenterY);
-        closePath(gc);
+        appendDiamondPath(gc, centerX, topCenterY, radius);
         gc.stroke();
 
         gc.beginPath();
-        gc.moveTo(centerX, bottomCenterY - radius);
-        gc.lineTo(centerX + radius, bottomCenterY);
-        gc.lineTo(centerX, bottomCenterY + radius);
-        gc.lineTo(centerX - radius, bottomCenterY);
+        appendDiamondPath(gc, centerX, bottomCenterY, radius);
+        gc.stroke();
+    }
+
+    private void appendDiamondPath(GraphicsContext gc, float centerX, float centerY, float radius) {
+        gc.moveTo(centerX, centerY - radius);
+        gc.lineTo(centerX + radius, centerY);
+        gc.lineTo(centerX, centerY + radius);
+        gc.lineTo(centerX - radius, centerY);
         closePath(gc);
+    }
+
+    private void strokeTrimmedSegment(GraphicsContext gc, float startX, float startY, float endX, float endY,
+                                      float trimStart, float trimEnd) {
+        float dx = endX - startX;
+        float dy = endY - startY;
+        float length = (float)Math.hypot(dx, dy);
+        if (length <= 1.0E-4f || trimStart + trimEnd >= length - 1.0E-4f) {
+            return;
+        }
+
+        float invLength = 1.0f / length;
+        float fromX = startX + dx * (trimStart * invLength);
+        float fromY = startY + dy * (trimStart * invLength);
+        float toX = endX - dx * (trimEnd * invLength);
+        float toY = endY - dy * (trimEnd * invLength);
+
+        gc.beginPath();
+        gc.moveTo(fromX, fromY);
+        gc.lineTo(toX, toY);
         gc.stroke();
     }
 
