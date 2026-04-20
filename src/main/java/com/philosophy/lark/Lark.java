@@ -3,12 +3,18 @@ package com.philosophy.lark;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.prefs.BackingStoreException;
+import java.util.prefs.Preferences;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.layout.Background;
+import javafx.scene.layout.BackgroundFill;
+import javafx.scene.layout.CornerRadii;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.FillRule;
@@ -17,11 +23,36 @@ import javafx.stage.Stage;
 import com.gluonhq.attach.accelerometer.AccelerometerService;
 
 public final class Lark extends Application {
-    private static final Color BACKGROUND = Color.WHITE;
-    private static final Color FOREGROUND = Color.web("#54626F");      // 暮色蓝
-    private static final Color LIQUID_SOFT = Color.web("#7A868F", 0.30); // 稀释蓝灰
-    private static final Color LIQUID_SOLID = Color.web("#64737E", 0.98); // 固体钢蓝
-    private static final Color LIQUID_FLOW = Color.web("#8BA0B0", 0.98);
+    private static final String PALETTE_PREFERENCE_KEY = "display.palette";
+    private static final float TAP_MAX_DISTANCE = 18.0f;
+    private static final long TAP_MAX_DURATION_NANOS = 220_000_000L;
+    private static final long LONG_PRESS_TRIGGER_NANOS = 260_000_000L;
+    private static final long SYNTHETIC_MOUSE_SUPPRESSION_NANOS = 700_000_000L;
+    private static final float VACUUM_RADIUS_WORLD = 0.110f;
+    private static final float VACUUM_EDGE_WIDTH_WORLD = 0.080f;
+    private static final float VACUUM_FORCE_STRENGTH = 3.4f;
+
+    private final Preferences preferences = Preferences.userNodeForPackage(Lark.class);
+    private ColorPalette palette;
+    private boolean mouseHoverActive;
+    private boolean mousePressed;
+    private float mousePressX;
+    private float mousePressY;
+    private float mouseCurrentX;
+    private float mouseCurrentY;
+    private long mousePressNanos;
+    private boolean mouseTapCandidate;
+    private boolean mouseLongPressActive;
+    private boolean touchPressed;
+    private float touchPressX;
+    private float touchPressY;
+    private float touchCurrentX;
+    private float touchCurrentY;
+    private long touchPressNanos;
+    private boolean touchTapCandidate;
+    private boolean touchLongPressActive;
+    private long suppressMouseTapUntilNanos;
+
     private static final float REVEAL_START = 0.11f;
     private static final float REVEAL_END = 0.62f;
     private static final float CONTOUR_GRID_SCALE = 0.5f;
@@ -31,6 +62,9 @@ public final class Lark extends Application {
 
     @Override
     public void start(Stage stage) {
+        palette = loadSavedPalette();
+        savePalette();
+
         LarkController.SimulationTuning simulationTuning = LarkController.simulationTuning();
         LarkController.DisplayTuning displayTuning = LarkController.displayTuning();
         HourglassSimulation simulation = new HourglassSimulation(LarkController.DEFAULT_LIT_COUNT, 42L, simulationTuning);
@@ -40,24 +74,117 @@ public final class Lark extends Application {
         Canvas frameCanvas = new Canvas(LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT);
         Canvas fluidCanvas = new Canvas(LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT);
         StackPane root = new StackPane(frameCanvas, fluidCanvas);
-        root.setStyle("-fx-background-color: white;");
 
         frameCanvas.widthProperty().bind(root.widthProperty());
         frameCanvas.heightProperty().bind(root.heightProperty());
         fluidCanvas.widthProperty().bind(root.widthProperty());
         fluidCanvas.heightProperty().bind(root.heightProperty());
 
-        Scene scene = new Scene(root, LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT, BACKGROUND);
-        scene.setOnMouseMoved(event -> gravityController.updateFromPointer(
-                (float)event.getSceneX(), (float)event.getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
-        scene.setOnMouseDragged(event -> gravityController.updateFromPointer(
-                (float)event.getSceneX(), (float)event.getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
-        scene.setOnMouseExited(event -> gravityController.releasePointer());
-        scene.setOnTouchPressed(event -> gravityController.updateFromPointer(
-                (float)event.getTouchPoint().getSceneX(), (float)event.getTouchPoint().getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
-        scene.setOnTouchMoved(event -> gravityController.updateFromPointer(
-                (float)event.getTouchPoint().getSceneX(), (float)event.getTouchPoint().getSceneY(), (float)scene.getWidth(), (float)scene.getHeight()));
-        scene.setOnTouchReleased(event -> gravityController.releasePointer());
+        Scene scene = new Scene(root, LarkController.DEFAULT_WIDTH, LarkController.DEFAULT_HEIGHT, palette.background());
+        applyPalette(root, scene);
+        Runnable switchPalette = () -> {
+            palette = ColorPalette.nextAfter(palette);
+            savePalette();
+            applyPalette(root, scene);
+            redrawStaticLayer(frameCanvas.getGraphicsContext2D());
+            render(fluidCanvas.getGraphicsContext2D(), simulation, gravityController, displayField);
+            root.requestFocus();
+        };
+
+        scene.setOnMousePressed(event -> {
+            if (isSyntheticMouseSuppressed()) {
+                return;
+            }
+            float sceneX = (float)event.getSceneX();
+            float sceneY = (float)event.getSceneY();
+            beginMouseTap(sceneX, sceneY);
+            mouseHoverActive = true;
+            gravityController.updateFromPointer(sceneX, sceneY, (float)scene.getWidth(), (float)scene.getHeight());
+        });
+        scene.setOnMouseMoved(event -> {
+            if (isSyntheticMouseSuppressed()) {
+                return;
+            }
+            mouseHoverActive = true;
+            mouseCurrentX = (float)event.getSceneX();
+            mouseCurrentY = (float)event.getSceneY();
+        });
+        scene.setOnMouseDragged(event -> {
+            if (isSyntheticMouseSuppressed()) {
+                return;
+            }
+            mouseCurrentX = (float)event.getSceneX();
+            mouseCurrentY = (float)event.getSceneY();
+            mouseHoverActive = true;
+            if (mousePressed) {
+                gravityController.updateFromPointer(
+                        mouseCurrentX, mouseCurrentY, (float)scene.getWidth(), (float)scene.getHeight());
+            }
+            mouseTapCandidate &= isTapWithinThreshold(mousePressX, mousePressY, mousePressNanos,
+                    mouseCurrentX, mouseCurrentY);
+        });
+        scene.setOnMouseReleased(event -> {
+            if (isSyntheticMouseSuppressed()) {
+                mousePressed = false;
+                mouseLongPressActive = false;
+                mouseTapCandidate = false;
+                return;
+            }
+            mouseCurrentX = (float)event.getSceneX();
+            mouseCurrentY = (float)event.getSceneY();
+            mouseHoverActive = true;
+            if (System.nanoTime() < suppressMouseTapUntilNanos) {
+                mousePressed = false;
+                mouseLongPressActive = false;
+                mouseTapCandidate = false;
+                gravityController.releasePointer();
+                return;
+            }
+            mouseLongPressActive = isLongPress(mousePressNanos, System.nanoTime());
+            if (mouseTapCandidate && !mouseLongPressActive
+                    && isTapWithinThreshold(mousePressX, mousePressY, mousePressNanos, mouseCurrentX, mouseCurrentY)) {
+                switchPalette.run();
+            }
+            mousePressed = false;
+            mouseLongPressActive = false;
+            mouseTapCandidate = false;
+            gravityController.releasePointer();
+        });
+        scene.setOnMouseExited(event -> {
+            mouseHoverActive = false;
+            mousePressed = false;
+            mouseLongPressActive = false;
+            mouseTapCandidate = false;
+            gravityController.releasePointer();
+        });
+        scene.setOnTouchPressed(event -> {
+            float sceneX = (float)event.getTouchPoint().getSceneX();
+            float sceneY = (float)event.getTouchPoint().getSceneY();
+            beginTouchTap(sceneX, sceneY);
+            suppressMouseTapUntilNanos = System.nanoTime() + SYNTHETIC_MOUSE_SUPPRESSION_NANOS;
+        });
+        scene.setOnTouchMoved(event -> {
+            float sceneX = (float)event.getTouchPoint().getSceneX();
+            float sceneY = (float)event.getTouchPoint().getSceneY();
+            touchCurrentX = sceneX;
+            touchCurrentY = sceneY;
+            touchTapCandidate &= isTapWithinThreshold(touchPressX, touchPressY, touchPressNanos, sceneX, sceneY);
+        });
+        scene.setOnTouchReleased(event -> {
+            float sceneX = (float)event.getTouchPoint().getSceneX();
+            float sceneY = (float)event.getTouchPoint().getSceneY();
+            touchCurrentX = sceneX;
+            touchCurrentY = sceneY;
+            suppressMouseTapUntilNanos = System.nanoTime() + SYNTHETIC_MOUSE_SUPPRESSION_NANOS;
+            touchLongPressActive = isLongPress(touchPressNanos, System.nanoTime());
+            if (touchTapCandidate && !touchLongPressActive
+                    && isTapWithinThreshold(touchPressX, touchPressY, touchPressNanos, sceneX, sceneY)) {
+                switchPalette.run();
+            }
+            touchPressed = false;
+            touchLongPressActive = false;
+            touchTapCandidate = false;
+        });
         scene.setOnKeyPressed(gravityController::handleKeyPressed);
         scene.setOnKeyReleased(gravityController::handleKeyReleased);
 
@@ -99,6 +226,8 @@ public final class Lark extends Application {
                 lastTick = now;
                 float deltaSeconds = Math.min(rawDeltaSeconds,
                         (float)simulationTuning.fixedTick() * (float)simulationTuning.maxPhysicsStepsPerFrame());
+                HourglassSimulation.RadialForce radialForce = resolveActiveRadialForce(
+                        now, (float)scene.getWidth(), (float)scene.getHeight());
 
                 gravityController.step(deltaSeconds);
                 simulation.step(deltaSeconds,
@@ -106,7 +235,8 @@ public final class Lark extends Application {
                         gravityController.currentY(),
                         gravityController.agitation(),
                         gravityController.inertiaX(),
-                        gravityController.inertiaY());
+                        gravityController.inertiaY(),
+                        radialForce);
                 render(fluidCanvas.getGraphicsContext2D(), simulation, gravityController, displayField);
             }
         };
@@ -117,19 +247,132 @@ public final class Lark extends Application {
         launch(args);
     }
 
+    private void applyPalette(StackPane root, Scene scene) {
+        root.setBackground(new Background(new BackgroundFill(palette.background(), CornerRadii.EMPTY, Insets.EMPTY)));
+        scene.setFill(palette.background());
+    }
+
+    private ColorPalette loadSavedPalette() {
+        return ColorPalette.fromNameOrRandom(preferences.get(PALETTE_PREFERENCE_KEY, null));
+    }
+
+    private void savePalette() {
+        if (palette == null) {
+            return;
+        }
+
+        preferences.put(PALETTE_PREFERENCE_KEY, palette.name());
+        try {
+            preferences.flush();
+        } catch (BackingStoreException ignored) {
+            // 如果平台暂时无法立即刷盘，至少保留本次运行中的选择。
+        }
+    }
+
+    private void beginMouseTap(float sceneX, float sceneY) {
+        mousePressed = true;
+        mousePressX = sceneX;
+        mousePressY = sceneY;
+        mouseCurrentX = sceneX;
+        mouseCurrentY = sceneY;
+        mousePressNanos = System.nanoTime();
+        mouseLongPressActive = false;
+        mouseTapCandidate = true;
+    }
+
+    private void beginTouchTap(float sceneX, float sceneY) {
+        touchPressed = true;
+        touchPressX = sceneX;
+        touchPressY = sceneY;
+        touchCurrentX = sceneX;
+        touchCurrentY = sceneY;
+        touchPressNanos = System.nanoTime();
+        touchLongPressActive = false;
+        touchTapCandidate = true;
+    }
+
+    private boolean isTapWithinThreshold(float pressX, float pressY, long pressNanos, float releaseX, float releaseY) {
+        float dx = releaseX - pressX;
+        float dy = releaseY - pressY;
+        float maxDistanceSquared = TAP_MAX_DISTANCE * TAP_MAX_DISTANCE;
+        long duration = System.nanoTime() - pressNanos;
+        return dx * dx + dy * dy <= maxDistanceSquared && duration <= TAP_MAX_DURATION_NANOS;
+    }
+
+    private HourglassSimulation.RadialForce resolveActiveRadialForce(long now, float sceneWidth, float sceneHeight) {
+        if (touchPressed) {
+            HourglassSimulation.RadialForce touchForce = resolveTouchRadialForce(sceneWidth, sceneHeight);
+            if (touchForce != null) {
+                return touchForce;
+            }
+        }
+        return resolveMouseRadialForce(sceneWidth, sceneHeight);
+    }
+
+    private HourglassSimulation.RadialForce resolveMouseRadialForce(float sceneWidth, float sceneHeight) {
+        if (!mouseHoverActive) {
+            return null;
+        }
+        return buildRadialForce(mouseCurrentX, mouseCurrentY, sceneWidth, sceneHeight);
+    }
+
+    private HourglassSimulation.RadialForce resolveTouchRadialForce(float sceneWidth, float sceneHeight) {
+        if (!touchPressed) {
+            return null;
+        }
+        return buildRadialForce(touchCurrentX, touchCurrentY, sceneWidth, sceneHeight);
+    }
+
+    private boolean isLongPress(long pressNanos, long now) {
+        return now - pressNanos >= LONG_PRESS_TRIGGER_NANOS;
+    }
+
+    private boolean isSyntheticMouseSuppressed() {
+        return System.nanoTime() < suppressMouseTapUntilNanos;
+    }
+
+    private HourglassSimulation.RadialForce buildRadialForce(float sceneX, float sceneY,
+                                                             float sceneWidth, float sceneHeight) {
+        if (sceneWidth <= 0.0f || sceneHeight <= 0.0f) {
+            return null;
+        }
+
+        HourglassSimulation.Vector2 worldCenter = scenePointToWorld(sceneX, sceneY, sceneWidth, sceneHeight);
+        if (!HourglassSimulation.isInsideHourglass(worldCenter.x(), worldCenter.y())) {
+            return null;
+        }
+        return new HourglassSimulation.RadialForce(
+                worldCenter.x(),
+                worldCenter.y(),
+                VACUUM_RADIUS_WORLD,
+                VACUUM_EDGE_WIDTH_WORLD,
+                VACUUM_FORCE_STRENGTH);
+    }
+
+    private HourglassSimulation.Vector2 scenePointToWorld(float sceneX, float sceneY, float sceneWidth, float sceneHeight) {
+        float scale = computeWorldScale(sceneWidth, sceneHeight);
+        double worldX = (sceneX - sceneWidth * 0.5f) / Math.max(scale, 1.0E-4f);
+        double worldY = (sceneY - sceneHeight * 0.5f) / Math.max(scale, 1.0E-4f);
+        return new HourglassSimulation.Vector2(worldX, worldY);
+    }
+
     private void render(GraphicsContext gc, HourglassSimulation simulation,
                         GravityController gravityController, HourglassDisplayField displayField) {
         gc.clearRect(0, 0, gc.getCanvas().getWidth(), gc.getCanvas().getHeight());
         drawLights(gc, simulation, displayField, gravityController.agitation());
-        // 沿沙漏边界外部画一圈背景色遮罩，遮住溢出边界的粒子
         float width = (float)gc.getCanvas().getWidth();
         float height = (float)gc.getCanvas().getHeight();
-        float scale = (float)Math.min((width - 56.0f) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15f),
-                (height - 56.0f) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
+        float scale = computeWorldScale(width, height);
         float centerX = width * 0.5f;
         float centerY = height * 0.5f;
         drawHourglassMask(gc, centerX, centerY, scale);
         drawHourglassFrame(gc, centerX, centerY, scale);
+    }
+
+
+    private float computeWorldScale(float width, float height) {
+        return (float)Math.min((width - 56.0f) / (HourglassSimulation.MAX_HALF_WIDTH * 2.15f),
+                (height - 56.0f) / (HourglassSimulation.WORLD_BOTTOM - HourglassSimulation.WORLD_TOP));
     }
 
     // 沿沙漏边界外部画一圈背景色遮罩，遮住溢出边界的粒子
@@ -141,7 +384,7 @@ public final class Lark extends Application {
         float bottomCenterY = centerY + (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
 
         gc.save();
-        gc.setFill(BACKGROUND);
+        gc.setFill(palette.background());
         gc.setFillRule(FillRule.EVEN_ODD);
         gc.beginPath();
         gc.rect(0.0, 0.0, width, height);
@@ -151,7 +394,7 @@ public final class Lark extends Application {
         gc.restore();
 
         gc.save();
-        gc.setStroke(BACKGROUND);
+        gc.setStroke(palette.background());
         gc.setLineCap(StrokeLineCap.ROUND);
         float lineWidth = (float)Math.max(8.0f, scale * 0.048f);
         float throatTrim = Math.max(lineWidth * THROAT_MASK_TRIM_LINE_SCALE, scale * THROAT_MASK_TRIM_WORLD_SCALE);
@@ -191,7 +434,7 @@ public final class Lark extends Application {
         float centerX = width * 0.5f;
         float centerY = height * 0.5f;
 
-        gc.setFill(BACKGROUND);
+        gc.setFill(palette.background());
         gc.fillRect(0, 0, width, height);
         drawHourglassFrame(gc, centerX, centerY, scale);
     }
@@ -201,7 +444,7 @@ public final class Lark extends Application {
         float topCenterY = centerY - (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
         float bottomCenterY = centerY + (float)(HourglassSimulation.DIAMOND_RADIUS * scale);
 
-        gc.setStroke(FOREGROUND);
+        gc.setStroke(palette.foreground());
         gc.setLineCap(StrokeLineCap.ROUND);
         gc.setLineWidth((float)Math.max(2.0f, scale * 0.012f));
 
@@ -285,11 +528,11 @@ public final class Lark extends Application {
         }
 
         drawBucket(gc, displayField, displayField.softIndices, softCount,
-                centerX, centerY, scale, softParticleSize, LIQUID_SOFT, 0.18f, 1.22f);
+                centerX, centerY, scale, softParticleSize, palette.liquidSoft(), 0.18f, 1.22f);
         drawBucket(gc, displayField, displayField.solidIndices, solidCount,
-                centerX, centerY, scale, particleSize, LIQUID_SOLID, 0.22f, 1.08f);
+                centerX, centerY, scale, particleSize, palette.liquidSolid(), 0.22f, 1.08f);
         drawBucket(gc, displayField, displayField.flowIndices, flowCount,
-                centerX, centerY, scale, flowParticleSize, LIQUID_FLOW, 0.20f, 1.12f);
+                centerX, centerY, scale, flowParticleSize, palette.liquidFlow(), 0.20f, 1.12f);
     }
 
     private void drawBucket(GraphicsContext gc, HourglassDisplayField displayField, int[] indices, int count,

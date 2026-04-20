@@ -24,8 +24,8 @@ public final class HourglassSimulation {
     private static final double NEAR_STIFFNESS = 2.30;
     private static final double PRESSURE_RESPONSE = 0.040;
     private static final double VISCOSITY = 0.42;
-    private static final double BASE_DAMPING = 0.992;
-    private static final double AGITATED_DAMPING = 0.997;
+    private static final double BASE_DAMPING = 1.0;
+    private static final double AGITATED_DAMPING = 1.0;
     private static final double BOUNDARY_BOUNCE = 0.24;
     private static final double BOUNDARY_TANGENT_DAMPING = 0.98;
     private static final double REST_SPEED = 0.075;
@@ -118,6 +118,12 @@ public final class HourglassSimulation {
         seedTopReservoir(seed);
     }
 
+    public record RadialForce(double centerX, double centerY, double radius, double bandWidth, double strength) {
+        public boolean isActive() {
+            return strength > 1.0E-8 && radius > 1.0E-8;
+        }
+    }
+
     public void step(double deltaSeconds, Vector2 gravity) {
         step(deltaSeconds, gravity.x(), gravity.y(), 0.0, gravity.x(), gravity.y());
     }
@@ -131,6 +137,11 @@ public final class HourglassSimulation {
     }
 
     public void step(double deltaSeconds, double gravityX, double gravityY, double agitation, double inertiaX, double inertiaY) {
+        step(deltaSeconds, gravityX, gravityY, agitation, inertiaX, inertiaY, null);
+    }
+
+    public void step(double deltaSeconds, double gravityX, double gravityY, double agitation,
+                     double inertiaX, double inertiaY, RadialForce radialForce) {
         accumulator += Math.max(0.0, deltaSeconds);
         double gravityMagnitude = clamp(magnitude(gravityX, gravityY), 0.0, 1.0);
         double normalizedGravityX = 0.0;
@@ -151,7 +162,7 @@ public final class HourglassSimulation {
         double boundedAgitation = clamp(agitation, 0.0, 1.0);
         while (accumulator >= fixedTick) {
             advanceFluidStep(normalizedGravityX, normalizedGravityY, gravityMagnitude,
-                    boundedAgitation, normalizedInertiaX, normalizedInertiaY);
+                    boundedAgitation, normalizedInertiaX, normalizedInertiaY, radialForce);
             accumulator -= fixedTick;
         }
     }
@@ -275,6 +286,19 @@ public final class HourglassSimulation {
         return false;
     }
 
+    int particleCountNear(double worldX, double worldY, double radius) {
+        double radiusSquared = radius * radius;
+        int count = 0;
+        for (int i = 0; i < particleCount; i++) {
+            double dx = positionX[i] - worldX;
+            double dy = positionY[i] - worldY;
+            if (dx * dx + dy * dy <= radiusSquared) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     public static boolean isInsideHourglass(double worldX, double worldY) {
         double halfWidth = halfWidthAt(worldY);
         return halfWidth >= 0.0 && Math.abs(worldX) <= halfWidth + 1.0E-9;
@@ -338,7 +362,7 @@ public final class HourglassSimulation {
     }
 
     private void advanceFluidStep(double gravityX, double gravityY, double gravityMagnitude,
-                                  double agitation, double inertiaX, double inertiaY) {
+                                  double agitation, double inertiaX, double inertiaY, RadialForce radialForce) {
         double effectiveGravityX = 0.0;
         double effectiveGravityY = 0.0;
         if (gravityMagnitude >= 1.0E-6) {
@@ -363,6 +387,7 @@ public final class HourglassSimulation {
 
         buildSpatialIndex(positionX, positionY);
         applyViscosity(agitation);
+        applyRadialForce(radialForce, agitation);
 
         // Modify damping to retain minimal oscillation when velocity is low
         double damping = lerp(BASE_DAMPING, AGITATED_DAMPING, agitation);
@@ -373,6 +398,7 @@ public final class HourglassSimulation {
 
             predictedX[i] = positionX[i] + velocityX[i] * fixedTick;
             predictedY[i] = positionY[i] + velocityY[i] * fixedTick;
+            constrainToRadialObstacle(i, predictedX, predictedY, radialForce, true);
             constrainToBoundary(i, predictedX, predictedY, true, agitation);
         }
 
@@ -381,6 +407,7 @@ public final class HourglassSimulation {
             computeDensities(predictedX, predictedY);
             relaxPressure(agitation);
             for (int i = 0; i < particleCount; i++) {
+                constrainToRadialObstacle(i, predictedX, predictedY, radialForce, false);
                 constrainToBoundary(i, predictedX, predictedY, false, agitation);
             }
         }
@@ -402,6 +429,105 @@ public final class HourglassSimulation {
             double speed = magnitude(velocityX[i], velocityY[i]);
             double normalizedFlow = clamp(speed / (MAX_SPEED * 0.82), 0.0, 1.0);
             flowActivity[i] = clamp(flowActivity[i] * 0.84 + normalizedFlow * 0.16, 0.0, 1.0);
+        }
+    }
+
+    private void applyRadialForce(RadialForce radialForce, double agitation) {
+        if (radialForce == null || !radialForce.isActive()) {
+            return;
+        }
+
+        double centerX = clamp(radialForce.centerX(), -MAX_HALF_WIDTH, MAX_HALF_WIDTH);
+        double centerY = clamp(radialForce.centerY(), WORLD_TOP, WORLD_BOTTOM);
+        double radius = Math.max(lightSpacing * 1.8, radialForce.radius());
+        double bandWidth = Math.max(lightSpacing * 1.1, radialForce.bandWidth());
+        double outerRadius = radius + bandWidth;
+        double outerRadiusSquared = outerRadius * outerRadius;
+        double strength = radialForce.strength() * (0.92 + agitation * 0.18);
+
+        for (int i = 0; i < particleCount; i++) {
+            double dx = positionX[i] - centerX;
+            double dy = positionY[i] - centerY;
+            double distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared > outerRadiusSquared) {
+                continue;
+            }
+
+            double distance = Math.sqrt(distanceSquared);
+            double falloff;
+            if (distance <= radius) {
+                double normalizedInside = radius <= 1.0E-6 ? 1.0 : distance / radius;
+                falloff = 0.30 + 0.70 * normalizedInside * normalizedInside;
+            } else {
+                double normalizedEdgeOffset = (distance - radius) / Math.max(bandWidth, 1.0E-6);
+                if (normalizedEdgeOffset >= 1.0) {
+                    continue;
+                }
+                double edgeFade = 1.0 - normalizedEdgeOffset;
+                falloff = edgeFade * edgeFade;
+            }
+            double impulse = strength * falloff * falloff * fixedTick;
+
+            double directionX;
+            double directionY;
+            if (distance < 1.0E-6) {
+                double angle = separationAngle(i, i + 17);
+                directionX = Math.cos(angle);
+                directionY = Math.sin(angle);
+            } else {
+                double inverseDistance = 1.0 / distance;
+                directionX = dx * inverseDistance;
+                directionY = dy * inverseDistance;
+            }
+
+            velocityX[i] += directionX * impulse;
+            velocityY[i] += directionY * impulse;
+        }
+    }
+
+    private void constrainToRadialObstacle(int index, double[] x, double[] y, RadialForce radialForce, boolean dampVelocity) {
+        if (radialForce == null || !radialForce.isActive()) {
+            return;
+        }
+
+        double centerX = clamp(radialForce.centerX(), -MAX_HALF_WIDTH, MAX_HALF_WIDTH);
+        double centerY = clamp(radialForce.centerY(), WORLD_TOP, WORLD_BOTTOM);
+        double radius = Math.max(lightSpacing * 1.8, radialForce.radius());
+        double hardRadius = radius + particleRadius * 0.65;
+        double px = x[index];
+        double py = y[index];
+        double dx = px - centerX;
+        double dy = py - centerY;
+        double distanceSquared = dx * dx + dy * dy;
+        double hardRadiusSquared = hardRadius * hardRadius;
+        if (distanceSquared >= hardRadiusSquared) {
+            return;
+        }
+
+        double distance = Math.sqrt(distanceSquared);
+        double normalX;
+        double normalY;
+        if (distance < 1.0E-6) {
+            double angle = separationAngle(index, index + 29);
+            normalX = Math.cos(angle);
+            normalY = Math.sin(angle);
+        } else {
+            double inverseDistance = 1.0 / distance;
+            normalX = dx * inverseDistance;
+            normalY = dy * inverseDistance;
+        }
+
+        x[index] = centerX + normalX * hardRadius;
+        y[index] = centerY + normalY * hardRadius;
+
+        if (dampVelocity) {
+            double inwardSpeed = velocityX[index] * normalX + velocityY[index] * normalY;
+            if (inwardSpeed < 0.0) {
+                velocityX[index] -= inwardSpeed * normalX;
+                velocityY[index] -= inwardSpeed * normalY;
+            }
+            velocityX[index] *= 0.94;
+            velocityY[index] *= 0.94;
         }
     }
 
