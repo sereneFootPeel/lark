@@ -27,7 +27,8 @@ public final class HourglassSimulation {
     private static final double BASE_DAMPING = 1.0;
     private static final double AGITATED_DAMPING = 1.0;
     private static final double BOUNDARY_BOUNCE = 0.24;
-    private static final double BOUNDARY_TANGENT_DAMPING = 0.98;
+    private static final double SIDE_WALL_UPHILL_GRACE_SECONDS = 3.0;
+    private static final double SIDE_WALL_UPHILL_STOP_SPEED = 0.001;
     private static final double REST_SPEED = 0.075;
     private static final double MAX_SPEED = 2.10;
     private static final double MIN_PRESSURE = 0.0;
@@ -63,6 +64,13 @@ public final class HourglassSimulation {
     private final int gridHeight;
 
     private double accumulator;
+    private double sideWallUphillTransitionElapsed = SIDE_WALL_UPHILL_GRACE_SECONDS;
+    private double lastGravityDirectionX;
+    private double lastGravityDirectionY;
+    private boolean hasLastGravityDirection;
+    private double lastRadialForceCenterX;
+    private double lastRadialForceCenterY;
+    private boolean hasLastRadialForce;
 
     private double paddingAt(double y) {
         // 白边在靠近颈口（y=0）处平滑过渡变小，防止颈口被完全堵死
@@ -318,6 +326,20 @@ public final class HourglassSimulation {
         return worldY <= DIAMOND_RADIUS ? worldY : WORLD_BOTTOM - worldY;
     }
 
+    private static double halfWidthSlopeAt(double worldY) {
+        if (worldY < WORLD_TOP || worldY > WORLD_BOTTOM) {
+            return 0.0;
+        }
+        double absY = Math.abs(worldY);
+        if (absY <= THROAT_HALF_WIDTH) {
+            return 0.0;
+        }
+        if (worldY < 0.0) {
+            return worldY <= -DIAMOND_RADIUS ? 1.0 : -1.0;
+        }
+        return worldY <= DIAMOND_RADIUS ? 1.0 : -1.0;
+    }
+
     private void seedTopReservoir(long seed) {
         Random random = new Random(seed);
         List<SeedPoint> candidates = new ArrayList<>();
@@ -363,6 +385,7 @@ public final class HourglassSimulation {
 
     private void advanceFluidStep(double gravityX, double gravityY, double gravityMagnitude,
                                   double agitation, double inertiaX, double inertiaY, RadialForce radialForce) {
+        updateSideWallUphillTransition(gravityX, gravityY, radialForce);
         double effectiveGravityX = 0.0;
         double effectiveGravityY = 0.0;
         if (gravityMagnitude >= 1.0E-6) {
@@ -399,7 +422,7 @@ public final class HourglassSimulation {
             predictedX[i] = positionX[i] + velocityX[i] * fixedTick;
             predictedY[i] = positionY[i] + velocityY[i] * fixedTick;
             constrainToRadialObstacle(i, predictedX, predictedY, radialForce, true);
-            constrainToBoundary(i, predictedX, predictedY, true, agitation);
+            constrainToBoundary(i, predictedX, predictedY, true, agitation, effectiveGravityX, effectiveGravityY);
         }
 
         for (int iteration = 0; iteration < relaxationIterations; iteration++) {
@@ -408,7 +431,7 @@ public final class HourglassSimulation {
             relaxPressure(agitation);
             for (int i = 0; i < particleCount; i++) {
                 constrainToRadialObstacle(i, predictedX, predictedY, radialForce, false);
-                constrainToBoundary(i, predictedX, predictedY, false, agitation);
+                constrainToBoundary(i, predictedX, predictedY, false, agitation, effectiveGravityX, effectiveGravityY);
             }
         }
 
@@ -419,17 +442,18 @@ public final class HourglassSimulation {
 
             velocityX[i] = (predictedX[i] - xPrev) / fixedTick;
             velocityY[i] = (predictedY[i] - yPrev) / fixedTick;
-            dampenMotion(i, gravityY, agitation);
+            dampenMotion(i, effectiveGravityX, effectiveGravityY, gravityMagnitude, agitation);
             limitSpeed(i, agitation);
             positionX[i] = predictedX[i];
             positionY[i] = predictedY[i];
-            constrainVelocityAgainstBoundary(i, agitation);
+            constrainVelocityAgainstBoundary(i, agitation, effectiveGravityX, effectiveGravityY);
 
 
             double speed = magnitude(velocityX[i], velocityY[i]);
             double normalizedFlow = clamp(speed / (MAX_SPEED * 0.82), 0.0, 1.0);
             flowActivity[i] = clamp(flowActivity[i] * 0.84 + normalizedFlow * 0.16, 0.0, 1.0);
         }
+        advanceSideWallUphillTransition();
     }
 
     private void applyRadialForce(RadialForce radialForce, double agitation) {
@@ -697,8 +721,8 @@ public final class HourglassSimulation {
         }
     }
 
-    private void dampenMotion(int index, double gravityY, double agitation) {
-        ContactInfo contactInfo = analyzeContacts(index, predictedX, predictedY);
+    private void dampenMotion(int index, double gravityX, double gravityY, double gravityMagnitude, double agitation) {
+        ContactInfo contactInfo = analyzeContacts(index, predictedX, predictedY, gravityX, gravityY);
         double speed = magnitude(velocityX[index], velocityY[index]);
         if (contactInfo.contactCount() > 0) {
             double contactDamping = lerp(0.86, 0.93, agitation);
@@ -706,7 +730,7 @@ public final class HourglassSimulation {
             velocityY[index] *= contactDamping;
         }
 
-        if (gravityY > 0.20 && contactInfo.supportCount() >= 2 && speed < REST_SPEED + agitation * 0.06) {
+        if (gravityMagnitude > 0.20 && contactInfo.supportCount() >= 2 && speed < REST_SPEED + agitation * 0.06) {
             velocityX[index] *= 0.18;
             velocityY[index] *= 0.05;
             if (Math.abs(velocityX[index]) < 0.004) {
@@ -718,9 +742,17 @@ public final class HourglassSimulation {
         }
     }
 
-    private ContactInfo analyzeContacts(int index, double[] x, double[] y) {
+    private ContactInfo analyzeContacts(int index, double[] x, double[] y, double gravityX, double gravityY) {
         int contacts = 0;
         int supportCount = 0;
+        double gravityDirectionMagnitude = magnitude(gravityX, gravityY);
+        double supportDirectionX = 0.0;
+        double supportDirectionY = 0.0;
+        if (gravityDirectionMagnitude >= 1.0E-8) {
+            double inverseGravityDirectionMagnitude = 1.0 / gravityDirectionMagnitude;
+            supportDirectionX = gravityX * inverseGravityDirectionMagnitude;
+            supportDirectionY = gravityY * inverseGravityDirectionMagnitude;
+        }
         for (int gridY = Math.max(0, cellY[index] - 1); gridY <= Math.min(gridHeight - 1, cellY[index] + 1); gridY++) {
             for (int gridX = Math.max(0, cellX[index] - 1); gridX <= Math.min(gridWidth - 1, cellX[index] + 1); gridX++) {
                 int other = gridHead[gridY * gridWidth + gridX];
@@ -731,7 +763,8 @@ public final class HourglassSimulation {
                         double distanceSquared = dx * dx + dy * dy;
                         if (distanceSquared <= smoothingRadiusSquared * 0.34) {
                             contacts++;
-                            if (dy > particleRadius * 0.20) {
+                            double supportProjection = dx * supportDirectionX + dy * supportDirectionY;
+                            if (supportProjection > particleRadius * 0.20) {
                                 supportCount++;
                             }
                         }
@@ -756,7 +789,150 @@ public final class HourglassSimulation {
         return relaxationIterations;
     }
 
-    private void constrainToBoundary(int index, double[] x, double[] y, boolean dampVelocity, double agitation) {
+    private void updateSideWallUphillTransition(double gravityX, double gravityY) {
+        updateSideWallUphillTransition(gravityX, gravityY, null);
+    }
+
+    private void updateSideWallUphillTransition(double gravityX, double gravityY, RadialForce radialForce) {
+        boolean shouldResetTransition = updateSideWallUphillTransitionFromGravity(gravityX, gravityY);
+        if (updateSideWallUphillTransitionFromRadialForce(radialForce)) {
+            shouldResetTransition = true;
+        }
+        if (shouldResetTransition) {
+            sideWallUphillTransitionElapsed = 0.0;
+        }
+    }
+
+    private boolean updateSideWallUphillTransitionFromGravity(double gravityX, double gravityY) {
+        double gravityMagnitude = magnitude(gravityX, gravityY);
+        if (gravityMagnitude < 1.0E-8) {
+            return false;
+        }
+
+        double inverseGravityMagnitude = 1.0 / gravityMagnitude;
+        double normalizedGravityX = normalizeDirectionComponent(gravityX * inverseGravityMagnitude);
+        double normalizedGravityY = normalizeDirectionComponent(gravityY * inverseGravityMagnitude);
+        if (!hasLastGravityDirection) {
+            hasLastGravityDirection = true;
+            lastGravityDirectionX = normalizedGravityX;
+            lastGravityDirectionY = normalizedGravityY;
+            return false;
+        }
+
+        boolean gravityDirectionChanged = false;
+        if (Double.compare(normalizedGravityX, lastGravityDirectionX) != 0
+                || Double.compare(normalizedGravityY, lastGravityDirectionY) != 0) {
+            gravityDirectionChanged = true;
+        }
+        lastGravityDirectionX = normalizedGravityX;
+        lastGravityDirectionY = normalizedGravityY;
+        return gravityDirectionChanged;
+    }
+
+    private boolean updateSideWallUphillTransitionFromRadialForce(RadialForce radialForce) {
+        if (radialForce == null || !radialForce.isActive()) {
+            boolean radialForceChanged = hasLastRadialForce;
+            hasLastRadialForce = false;
+            return radialForceChanged;
+        }
+
+        double centerX = radialForce.centerX();
+        double centerY = radialForce.centerY();
+        boolean radialForceChanged = !hasLastRadialForce
+                || Double.compare(centerX, lastRadialForceCenterX) != 0
+                || Double.compare(centerY, lastRadialForceCenterY) != 0;
+        hasLastRadialForce = true;
+        lastRadialForceCenterX = centerX;
+        lastRadialForceCenterY = centerY;
+        return radialForceChanged;
+    }
+
+    private void advanceSideWallUphillTransition() {
+        sideWallUphillTransitionElapsed = Math.min(
+                SIDE_WALL_UPHILL_GRACE_SECONDS,
+                sideWallUphillTransitionElapsed + fixedTick);
+    }
+
+    private double sideWallUphillRetainedRatio() {
+        return sideWallUphillTransitionElapsed < SIDE_WALL_UPHILL_GRACE_SECONDS ? 1.0 : 0.0;
+    }
+
+    private void constrainUpwardSideWallDisplacement(int index, double[] x, double[] y,
+                                                     double wallX, double wallY,
+                                                     double gravityX, double gravityY) {
+        double wallSide = Math.signum(wallX);
+        if (wallSide == 0.0) {
+            return;
+        }
+
+        double tangentX = wallSide * halfWidthSlopeAt(wallY);
+        double tangentY = 1.0;
+        double tangentMagnitude = magnitude(tangentX, tangentY);
+        tangentX /= tangentMagnitude;
+        tangentY /= tangentMagnitude;
+
+        double gravityProjection = gravityX * tangentX + gravityY * tangentY;
+        if (Math.abs(gravityProjection) < 1.0E-8) {
+            return;
+        }
+        if (gravityProjection < 0.0) {
+            tangentX = -tangentX;
+            tangentY = -tangentY;
+        }
+
+        double displacementX = x[index] - positionX[index];
+        double displacementY = y[index] - positionY[index];
+        double tangentialDisplacement = displacementX * tangentX + displacementY * tangentY;
+        if (tangentialDisplacement >= 0.0) {
+            return;
+        }
+
+        double targetTangentialDisplacement = tangentialDisplacement * sideWallUphillRetainedRatio();
+        if (Math.abs(targetTangentialDisplacement) <= SIDE_WALL_UPHILL_STOP_SPEED * fixedTick) {
+            targetTangentialDisplacement = 0.0;
+        }
+        double tangentialDelta = targetTangentialDisplacement - tangentialDisplacement;
+        x[index] += tangentX * tangentialDelta;
+        y[index] += tangentY * tangentialDelta;
+    }
+
+    private void applyUpwardSideWallFriction(int index, double wallX, double wallY, double gravityX, double gravityY) {
+        double wallSide = Math.signum(wallX);
+        if (wallSide == 0.0) {
+            return;
+        }
+
+        double tangentX = wallSide * halfWidthSlopeAt(wallY);
+        double tangentY = 1.0;
+        double tangentMagnitude = magnitude(tangentX, tangentY);
+        tangentX /= tangentMagnitude;
+        tangentY /= tangentMagnitude;
+
+        double gravityProjection = gravityX * tangentX + gravityY * tangentY;
+        if (Math.abs(gravityProjection) < 1.0E-8) {
+            return;
+        }
+        if (gravityProjection < 0.0) {
+            tangentX = -tangentX;
+            tangentY = -tangentY;
+        }
+
+        double tangentialSpeed = velocityX[index] * tangentX + velocityY[index] * tangentY;
+        if (tangentialSpeed >= 0.0) {
+            return;
+        }
+
+        double targetTangentialSpeed = tangentialSpeed * sideWallUphillRetainedRatio();
+        if (Math.abs(targetTangentialSpeed) <= SIDE_WALL_UPHILL_STOP_SPEED) {
+            targetTangentialSpeed = 0.0;
+        }
+        double tangentialDelta = targetTangentialSpeed - tangentialSpeed;
+        velocityX[index] += tangentX * tangentialDelta;
+        velocityY[index] += tangentY * tangentialDelta;
+    }
+
+    private void constrainToBoundary(int index, double[] x, double[] y, boolean dampVelocity, double agitation,
+                                     double gravityX, double gravityY) {
         double px = x[index];
         double py = y[index];
         double pad = paddingAt(py);
@@ -787,38 +963,42 @@ public final class HourglassSimulation {
         x[index] = px;
         y[index] = py;
 
+        boolean sideWallContact = Math.abs(px) >= halfWidth - particleRadius * 0.20;
+        if (sideWallContact) {
+            constrainUpwardSideWallDisplacement(index, x, y, px, py, gravityX, gravityY);
+        }
+
         if (dampVelocity) {
             double currentBounce = Math.min(0.95, BOUNDARY_BOUNCE + agitation * 0.7);
             if (clampedX) {
                 velocityX[index] = -velocityX[index] * currentBounce;
-                velocityY[index] *= BOUNDARY_TANGENT_DAMPING;
             }
             if (clampedY) {
-                velocityY[index] = -velocityY[index] * currentBounce;
-                velocityX[index] *= BOUNDARY_TANGENT_DAMPING;
+                velocityY[index] = -velocityY[index];
             }
         }
     }
 
-    private void constrainVelocityAgainstBoundary(int index, double agitation) {
+    private void constrainVelocityAgainstBoundary(int index, double agitation, double gravityX, double gravityY) {
         double x = positionX[index];
         double y = positionY[index];
         double pad = paddingAt(y);
         double halfWidth = Math.max(0.0, halfWidthAt(y) - pad);
 
         double currentBounce = Math.min(0.95, BOUNDARY_BOUNCE + agitation * 0.7);
+        boolean sideWallContact = Math.abs(x) >= halfWidth - particleRadius * 0.20;
 
-        if (Math.abs(x) >= halfWidth - 1.0E-5 && Math.signum(x) == Math.signum(velocityX[index])) {
+        if (sideWallContact && Math.signum(x) == Math.signum(velocityX[index])) {
             velocityX[index] = -velocityX[index] * currentBounce;
-            velocityY[index] *= BOUNDARY_TANGENT_DAMPING;
+        }
+        if (sideWallContact) {
+            applyUpwardSideWallFriction(index, x, y, gravityX, gravityY);
         }
         if (y <= WORLD_TOP + pad && velocityY[index] < 0.0) {
-            velocityY[index] = -velocityY[index] * currentBounce;
-            velocityX[index] *= BOUNDARY_TANGENT_DAMPING;
+            velocityY[index] = -velocityY[index];
         }
         if (y >= WORLD_BOTTOM - pad && velocityY[index] > 0.0) {
-            velocityY[index] = -velocityY[index] * currentBounce;
-            velocityX[index] *= BOUNDARY_TANGENT_DAMPING;
+            velocityY[index] = -velocityY[index];
         }
     }
 
@@ -865,6 +1045,10 @@ public final class HourglassSimulation {
 
     private static double lerp(double start, double end, double amount) {
         return start + (end - start) * amount;
+    }
+
+    private static double normalizeDirectionComponent(double component) {
+        return Math.abs(component) < 1.0E-12 ? 0.0 : component;
     }
 
     private static double clamp(double value, double min, double max) {

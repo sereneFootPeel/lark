@@ -105,9 +105,7 @@ public final class Lark extends Application {
             if (isSyntheticMouseSuppressed()) {
                 return;
             }
-            mouseHoverActive = true;
-            mouseCurrentX = (float)event.getSceneX();
-            mouseCurrentY = (float)event.getSceneY();
+            updateMouseHover((float)event.getSceneX(), (float)event.getSceneY());
         });
         scene.setOnMouseDragged(event -> {
             if (isSyntheticMouseSuppressed()) {
@@ -160,8 +158,7 @@ public final class Lark extends Application {
         scene.setOnTouchPressed(event -> {
             float sceneX = (float)event.getTouchPoint().getSceneX();
             float sceneY = (float)event.getTouchPoint().getSceneY();
-            beginTouchTap(sceneX, sceneY);
-            suppressMouseTapUntilNanos = System.nanoTime() + SYNTHETIC_MOUSE_SUPPRESSION_NANOS;
+            beginTouchInteraction(sceneX, sceneY, System.nanoTime());
         });
         scene.setOnTouchMoved(event -> {
             float sceneX = (float)event.getTouchPoint().getSceneX();
@@ -173,17 +170,9 @@ public final class Lark extends Application {
         scene.setOnTouchReleased(event -> {
             float sceneX = (float)event.getTouchPoint().getSceneX();
             float sceneY = (float)event.getTouchPoint().getSceneY();
-            touchCurrentX = sceneX;
-            touchCurrentY = sceneY;
-            suppressMouseTapUntilNanos = System.nanoTime() + SYNTHETIC_MOUSE_SUPPRESSION_NANOS;
-            touchLongPressActive = isLongPress(touchPressNanos, System.nanoTime());
-            if (touchTapCandidate && !touchLongPressActive
-                    && isTapWithinThreshold(touchPressX, touchPressY, touchPressNanos, sceneX, sceneY)) {
+            if (completeTouchInteraction(sceneX, sceneY, System.nanoTime())) {
                 switchPalette.run();
             }
-            touchPressed = false;
-            touchLongPressActive = false;
-            touchTapCandidate = false;
         });
         scene.setOnKeyPressed(gravityController::handleKeyPressed);
         scene.setOnKeyReleased(gravityController::handleKeyReleased);
@@ -227,7 +216,7 @@ public final class Lark extends Application {
                 float deltaSeconds = Math.min(rawDeltaSeconds,
                         (float)simulationTuning.fixedTick() * (float)simulationTuning.maxPhysicsStepsPerFrame());
                 HourglassSimulation.RadialForce radialForce = resolveActiveRadialForce(
-                        now, (float)scene.getWidth(), (float)scene.getHeight());
+                        (float)scene.getWidth(), (float)scene.getHeight());
 
                 gravityController.step(deltaSeconds);
                 simulation.step(deltaSeconds,
@@ -280,13 +269,37 @@ public final class Lark extends Application {
         mouseTapCandidate = true;
     }
 
-    private void beginTouchTap(float sceneX, float sceneY) {
+    void beginTouchInteraction(float sceneX, float sceneY, long nowNanos) {
+        suppressSyntheticMouse(nowNanos);
+        beginTouchTap(sceneX, sceneY, nowNanos);
+    }
+
+    boolean completeTouchInteraction(float sceneX, float sceneY, long nowNanos) {
+        touchCurrentX = sceneX;
+        touchCurrentY = sceneY;
+        suppressSyntheticMouse(nowNanos);
+        touchLongPressActive = isLongPress(touchPressNanos, nowNanos);
+        boolean shouldSwitchPalette = touchTapCandidate && !touchLongPressActive
+                && isTapWithinThreshold(touchPressX, touchPressY, touchPressNanos, sceneX, sceneY);
+        touchPressed = false;
+        touchLongPressActive = false;
+        touchTapCandidate = false;
+        return shouldSwitchPalette;
+    }
+
+    void updateMouseHover(float sceneX, float sceneY) {
+        mouseHoverActive = true;
+        mouseCurrentX = sceneX;
+        mouseCurrentY = sceneY;
+    }
+
+    private void beginTouchTap(float sceneX, float sceneY, long nowNanos) {
         touchPressed = true;
         touchPressX = sceneX;
         touchPressY = sceneY;
         touchCurrentX = sceneX;
         touchCurrentY = sceneY;
-        touchPressNanos = System.nanoTime();
+        touchPressNanos = nowNanos;
         touchLongPressActive = false;
         touchTapCandidate = true;
     }
@@ -299,7 +312,7 @@ public final class Lark extends Application {
         return dx * dx + dy * dy <= maxDistanceSquared && duration <= TAP_MAX_DURATION_NANOS;
     }
 
-    private HourglassSimulation.RadialForce resolveActiveRadialForce(long now, float sceneWidth, float sceneHeight) {
+    HourglassSimulation.RadialForce resolveActiveRadialForce(float sceneWidth, float sceneHeight) {
         if (touchPressed) {
             HourglassSimulation.RadialForce touchForce = resolveTouchRadialForce(sceneWidth, sceneHeight);
             if (touchForce != null) {
@@ -310,6 +323,9 @@ public final class Lark extends Application {
     }
 
     private HourglassSimulation.RadialForce resolveMouseRadialForce(float sceneWidth, float sceneHeight) {
+        if (isSyntheticMouseSuppressed()) {
+            return null;
+        }
         if (!mouseHoverActive) {
             return null;
         }
@@ -329,6 +345,18 @@ public final class Lark extends Application {
 
     private boolean isSyntheticMouseSuppressed() {
         return System.nanoTime() < suppressMouseTapUntilNanos;
+    }
+
+    private void suppressSyntheticMouse(long nowNanos) {
+        suppressMouseTapUntilNanos = nowNanos + SYNTHETIC_MOUSE_SUPPRESSION_NANOS;
+        clearMousePointerState();
+    }
+
+    private void clearMousePointerState() {
+        mouseHoverActive = false;
+        mousePressed = false;
+        mouseLongPressActive = false;
+        mouseTapCandidate = false;
     }
 
     private HourglassSimulation.RadialForce buildRadialForce(float sceneX, float sceneY,
